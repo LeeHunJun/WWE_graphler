@@ -1,0 +1,203 @@
+{
+  "status": "ok",
+  "message": "개발용 업무 보고서 명세로, 6가지 시각화 유형과 강조 동작을 확인합니다.",
+  "visuals": [
+    {
+      "id": "sample-line-sales",
+      "type": "line_chart",
+      "title": "월별 매출 추이",
+      "caption": "4월 매출은 190억 원으로 3월보다 35.7% 증가했습니다.",
+      "source_ids": ["sheet:0:row:2", "sheet:0:row:3", "sheet:0:row:4", "sheet:0:row:5"],
+      "data": {
+        "labels": ["1월", "2월", "3월", "4월"],
+        "unit": "억원",
+        "series": [
+          {
+            "id": "sales",
+            "name": "매출",
+            "unit": "억원",
+            "values": [120, 160, 140, 190],
+            "source_ids": ["sheet:0:row:2", "sheet:0:row:3", "sheet:0:row:4", "sheet:0:row:5"]
+          }
+        ]
+      },
+      "highlights": [
+        {
+          "target": {"series_id": "sales", "point_index": 2},
+          "level": "critical",
+          "label": "3월 매출 하락",
+          "reason": "2월보다 3월 매출이 12.5% 줄었습니다.",
+          "source_ids": ["sheet:0:row:4", "sheet:0:row:3"],
+          "derived": {
+            "formula": "(현재 값 - 직전 값) ÷ 직전 값 × 100",
+            "original_values": [
+              {"label": "2월 매출", "value": 160},
+              {"label": "3월 매출", "value": 140}
+            ],
+            "result": -12.5
+          }
+        },
+        {
+          "target": {"series_id": "sales", "point_index": 3},
+          "level": "important",
+          "label": "최고 매출",
+          "reason": "표시된 기간 중 4월 매출이 가장 높습니다.",
+          "source_ids": ["sheet:0:row:5"],
+          "derived": null
+        },
+        {
+          "target": {"series_id": "sales", "point_index": 0},
+          "level": "info",
+          "label": "기간 시작",
+          "reason": "비교를 시작하는 첫 번째 달입니다.",
+          "source_ids": ["sheet:0:row:2"],
+          "derived": null
+        }
+      ]
+    },
+    {
+      "id": "sample-bar-departments",
+      "type": "bar_chart",
+      "title": "부서별 완료 업무",
+      "caption": "개발팀이 10건으로 다섯 부서 중 가장 많은 업무를 완료했습니다.",
+      "source_ids": ["sheet:0:row:6", "sheet:0:row:7", "sheet:0:row:8", "sheet:0:row:9", "sheet:0:row:10"],
+      "data": {
+        "labels": ["기획", "디자인", "개발", "QA", "운영"],
+        "values": [8, 6, 10, 4, 5],
+        "source_ids": ["sheet:0:row:6", "sheet:0:row:7", "sheet:0:row:8", "sheet:0:row:9", "sheet:0:row:10"],
+        "series_name": "완료 업무",
+        "unit": "건"
+      },
+      "highlights": [
+        {
+          "target": {"point_index": 2},
+          "level": "important",
+          "label": "개발팀 10건",
+          "reason": "개발팀의 완료 업무 수가 가장 많습니다.",
+          "source_ids": ["sheet:0:row:8"],
+          "derived": null
+        }
+      ]
+    },
+    {
+      "id": "sample-comparison",
+      "type": "comparison_table",
+      "title": "업무 도입 전후 비교",
+      "caption": "자동화 도입 뒤 월간 처리량이 100건에서 135건으로 늘었습니다.",
+      "source_ids": ["sheet:0:row:2", "sheet:0:row:3"],
+      "data": {
+        "columns": [
+          {"key": "metric", "label": "항목"},
+          {"key": "before", "label": "도입 전"},
+          {"key": "after", "label": "도입 후"},
+          {"key": "change", "label": "변화"}
+        ],
+        "rows": [
+          {
+            "id": "throughput",
+            "cells": {"metric": "월간 처리량", "before": 100, "after": 135, "change": "+35%"},
+            "source_ids": ["sheet:0:row:2"]
+          },
+          {
+            "id": "review-time",
+            "cells": {"metric": "검토 소요 시간", "before": 10, "after": 7, "change": "-30%"},
+            "source_ids": ["sheet:0:row:3"]
+          }
+        ]
+      },
+      "highlights": [
+        {
+          "target": {"row_id": "throughput", "column_key": "after"},
+          "level": "important",
+          "label": "처리량 35건 증가",
+          "reason": "도입 후 월간 처리량이 늘었습니다.",
+          "source_ids": ["sheet:0:row:2"],
+          "derived": {
+            "formula": "도입 후 - 도입 전",
+            "original_values": [
+              {"label": "도입 전", "value": 100},
+              {"label": "도입 후", "value": 135}
+            ],
+            "result": 35
+          }
+        }
+      ]
+    },
+    {
+      "id": "sample-flow",
+      "type": "flowchart",
+      "title": "업무 승인 흐름",
+      "caption": "요청 등록 후 검토와 승인을 거쳐 결과를 공유합니다.",
+      "source_ids": ["sheet:0:row:7", "sheet:0:row:8", "sheet:0:row:9"],
+      "data": {
+        "nodes": [
+          {"id": "request", "label": "요청 등록", "description": "필수 자료 첨부", "source_ids": ["sheet:0:row:7"]},
+          {"id": "review", "label": "담당자 검토", "description": "내용과 일정 확인", "source_ids": ["sheet:0:row:8"]},
+          {"id": "approval", "label": "승인 후 공유", "description": "결과와 다음 단계 안내", "source_ids": ["sheet:0:row:9"]}
+        ],
+        "edges": [
+          {"from": "request", "to": "review", "label": "자료 확인"},
+          {"from": "review", "to": "approval", "label": "승인"}
+        ]
+      },
+      "highlights": [
+        {
+          "target": {"node_id": "review"},
+          "level": "critical",
+          "label": "검토 단계",
+          "reason": "승인 전에 담당자가 일정과 자료를 확인해야 합니다.",
+          "source_ids": ["sheet:0:row:8"],
+          "derived": null
+        }
+      ]
+    },
+    {
+      "id": "sample-timeline",
+      "type": "timeline",
+      "title": "분기 주요 일정",
+      "caption": "정식 출시 이후 일주일 안에 초기 사용 결과를 점검합니다.",
+      "source_ids": ["sheet:0:row:10", "sheet:0:row:11", "sheet:0:row:12"],
+      "data": {
+        "items": [
+          {"id": "plan", "date": "2026-04-02", "label": "계획 확정", "description": "범위와 담당자 합의", "source_ids": ["sheet:0:row:10"]},
+          {"id": "release", "date": "2026-04-16", "label": "정식 출시", "description": "전체 사용자에게 공개", "source_ids": ["sheet:0:row:11"]},
+          {"id": "review", "date": "2026-04-23", "label": "초기 결과 점검", "description": "사용 의견과 주요 지표 검토", "source_ids": ["sheet:0:row:12"]}
+        ]
+      },
+      "highlights": [
+        {
+          "target": {"item_id": "release"},
+          "level": "important",
+          "label": "4월 16일 출시",
+          "reason": "후속 점검 일정이 출시 일주일 뒤로 계획되어 있습니다.",
+          "source_ids": ["sheet:0:row:11"],
+          "derived": null
+        }
+      ]
+    },
+    {
+      "id": "sample-kpis",
+      "type": "kpi_cards",
+      "title": "핵심 성과 요약",
+      "caption": "출시 준비율은 92%이며, 미해결 위험 항목이 2건 남아 있습니다.",
+      "source_ids": ["sheet:0:row:12", "sheet:0:row:13"],
+      "data": {
+        "cards": [
+          {"id": "readiness", "label": "출시 준비율", "value": 92, "unit": "%", "note": "목표 100%", "source_ids": ["sheet:0:row:12"]},
+          {"id": "open-risks", "label": "미해결 위험", "value": 2, "unit": "건", "note": "담당자 지정 필요", "source_ids": ["sheet:0:row:13"]},
+          {"id": "satisfaction", "label": "사용 만족도", "value": 4.6, "unit": "/ 5", "note": "시범 사용 결과", "source_ids": ["sheet:0:row:12"]}
+        ]
+      },
+      "highlights": [
+        {
+          "target": {"card_id": "open-risks"},
+          "level": "critical",
+          "label": "위험 항목 2건",
+          "reason": "출시 전 담당자와 해결 일정을 확정해야 합니다.",
+          "source_ids": ["sheet:0:row:13"],
+          "derived": null
+        }
+      ]
+    }
+  ]
+}

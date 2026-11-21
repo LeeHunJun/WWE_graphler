@@ -1,0 +1,170 @@
+import { createServer as createHttpServer } from "node:http";
+import { createReadStream } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { AiServiceError, requestAiSummary } from "./ai-service.js";
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const DIST = path.join(ROOT, "dist");
+const BODY_LIMIT = 16 * 1024 * 1024;
+const MIME_TYPES = {
+  ".css": "text/css; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".wasm": "application/wasm",
+  ".webp": "image/webp",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
+const isProduction = process.argv.includes("--production") || process.env.NODE_ENV === "production";
+let vite;
+let localEnv = {};
+
+async function readJsonBody(request) {
+  const chunks = [];
+  let byteLength = 0;
+
+  for await (const chunk of request) {
+    byteLength += chunk.length;
+    if (byteLength > BODY_LIMIT) {
+      throw new AiServiceError("INVALID_DOCUMENT", "문서 텍스트가 요청 한도를 넘었습니다.");
+    }
+    chunks.push(chunk);
+  }
+
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new AiServiceError("INVALID_DOCUMENT", "요청 형식이 올바르지 않습니다.");
+  }
+}
+
+function getServiceConfig() {
+  return {
+    apiKey: process.env.LLM_API_KEY || localEnv.LLM_API_KEY,
+    baseUrl: process.env.LLM_BASE_URL || localEnv.LLM_BASE_URL,
+  };
+}
+
+async function getContractAssets() {
+  try {
+    const [contractText, sampleText] = await Promise.all([
+      readFile(path.join(ROOT, "VISUALIZATION-SPEC.md"), "utf8"),
+      readFile(path.join(ROOT, "public", "test-fixtures", "sample-visual-spec.json"), "utf8"),
+    ]);
+    return { contractText, sampleSpec: JSON.parse(sampleText) };
+  } catch {
+    throw new AiServiceError("AI_NOT_CONFIGURED", "시각화 규격 자료를 불러오지 못했습니다.");
+  }
+}
+
+function sendJson(response, statusCode, payload) {
+  response.writeHead(statusCode, {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+  });
+  response.end(JSON.stringify(payload));
+}
+
+async function handleAiRequest(request, response) {
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "POST 요청만 지원합니다.", code: "METHOD_NOT_ALLOWED" });
+    return;
+  }
+
+  try {
+    const payload = await readJsonBody(request);
+    const assets = await getContractAssets();
+    const result = await requestAiSummary(payload.document, {
+      ...getServiceConfig(),
+      ...assets,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    const code = error instanceof AiServiceError ? error.code : "AI_CALL_FAILED";
+    const message = error instanceof AiServiceError
+      ? error.message
+      : "AI 서비스 요청에 실패했습니다. 다시 시도해 주세요.";
+    const status = code === "INVALID_DOCUMENT" ? 400 : code === "NO_ANALYZABLE_CONTENT" ? 422 : code === "AI_NOT_CONFIGURED" ? 503 : 502;
+    sendJson(response, status, { error: message, code });
+  }
+}
+
+async function serveStatic(request, response) {
+  let requestPath;
+  try {
+    requestPath = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
+  } catch {
+    response.writeHead(400).end("잘못된 주소입니다.");
+    return;
+  }
+
+  const candidate = path.resolve(DIST, `.${requestPath}`);
+  if (candidate !== DIST && !candidate.startsWith(`${DIST}${path.sep}`)) {
+    response.writeHead(403).end("접근할 수 없습니다.");
+    return;
+  }
+
+  let filePath = candidate;
+  try {
+    const info = await stat(filePath);
+    if (info.isDirectory()) filePath = path.join(filePath, "index.html");
+    await stat(filePath);
+  } catch {
+    filePath = path.join(DIST, "index.html");
+  }
+
+  const extension = path.extname(filePath).toLowerCase();
+  response.writeHead(200, {
+    "Cache-Control": extension === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
+    "Content-Type": MIME_TYPES[extension] || "application/octet-stream",
+    "X-Content-Type-Options": "nosniff",
+  });
+  createReadStream(filePath).pipe(response);
+}
+
+async function main() {
+  const portArgument = process.argv.indexOf("--port");
+  const port = Number(process.env.PORT || (portArgument >= 0 ? process.argv[portArgument + 1] : 3000));
+
+  const server = createHttpServer(async (request, response) => {
+    const requestPath = new URL(request.url, "http://localhost").pathname;
+    if (requestPath === "/api/ai-summarize") {
+      await handleAiRequest(request, response);
+      return;
+    }
+
+    if (isProduction) {
+      await serveStatic(request, response);
+      return;
+    }
+
+    vite.middlewares(request, response);
+  });
+
+  if (!isProduction) {
+    const { createServer, loadEnv } = await import("vite");
+    localEnv = loadEnv("development", ROOT, ["LLM_API_KEY", "LLM_BASE_URL"]);
+    vite = await createServer({
+      root: ROOT,
+      appType: "spa",
+      server: {
+        hmr: { server },
+        middlewareMode: true,
+      },
+    });
+  }
+
+  server.listen(port, "0.0.0.0");
+}
+
+main().catch(() => {
+  process.stderr.write("서버를 시작하지 못했습니다. 설정과 포트를 확인해 주세요.\n");
+  process.exitCode = 1;
+});
