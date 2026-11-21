@@ -8,6 +8,7 @@ const STORE_NAME = "documents";
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const SAMPLE_DOCUMENT_ID = "grappler-sample-work-report";
 const UNREADABLE_MESSAGE = "파일의 내용을 읽을 수 없습니다. 파일을 확인한 후 다시 업로드해 주세요";
+const AI_RETRY_MESSAGE = "잠시 후 다시 시도해 주세요";
 const FILE_TYPES = {
   pdf: { label: "PDF", icon: "P", className: "pdf" },
   csv: { label: "CSV", icon: "C", className: "csv" },
@@ -716,7 +717,11 @@ function hasOnlyRealDataSources(value, sourceLookup) {
 function hasGroundedVisualNumbers(visual, sourceLookup) {
   const visualSourceText = [
     ...visual.source_ids.map((sourceId) => sourceLookup.get(sourceId)?.text || ""),
-    ...visual.highlights.map((highlight) => String(highlight.derived?.result ?? "")),
+    ...visual.highlights.flatMap((highlight) => {
+      const result = highlight.derived?.result;
+      if (typeof result !== "number" || !Number.isFinite(result)) return [String(result ?? "")];
+      return [String(result), Math.abs(result).toFixed(1)];
+    }),
   ].join("\n");
   if (!hasOnlySupportedNumbers(`${visual.title} ${visual.caption}`, visualSourceText)) return false;
 
@@ -791,7 +796,7 @@ function hasGroundedVisualNumbers(visual, sourceLookup) {
 }
 
 function normalizeAiSummary(result, record) {
-  if (!isPlainRecord(result) || !isPlainRecord(result.spec)) throw new Error("AI 응답 오류가 발생했습니다. 다시 시도해 주세요");
+  if (!isPlainRecord(result) || !isPlainRecord(result.spec)) throw new Error(AI_RETRY_MESSAGE);
   const { summary, key_points: keyPoints, spec } = result;
   if (!new Set(["ok", "insufficient_data"]).has(spec.status)
     || typeof spec.message !== "string"
@@ -800,7 +805,7 @@ function normalizeAiSummary(result, record) {
     || summary.length > 2
     || !Array.isArray(keyPoints)
     || keyPoints.length > 5) {
-    throw new Error("AI 응답 오류가 발생했습니다. 다시 시도해 주세요");
+    throw new Error(AI_RETRY_MESSAGE);
   }
 
   const sourceLookup = getSourceLookup(record);
@@ -817,11 +822,11 @@ function normalizeAiSummary(result, record) {
     || !isSupportedByEvidence(point, sourceLookup));
 
   if (invalidSummary || invalidKeyPoint || (spec.status === "ok" && summary.length === 0)) {
-    throw new Error("AI 응답 오류가 발생했습니다. 다시 시도해 주세요");
+    throw new Error(AI_RETRY_MESSAGE);
   }
 
   if (spec.status === "insufficient_data" && (summary.length > 0 || keyPoints.length > 0 || spec.visuals.length > 0)) {
-    throw new Error("AI 응답 오류가 발생했습니다. 다시 시도해 주세요");
+    throw new Error(AI_RETRY_MESSAGE);
   }
 
   const invalidVisual = spec.visuals.some((visual) => {
@@ -839,7 +844,7 @@ function normalizeAiSummary(result, record) {
       return false;
     });
   });
-  if (invalidVisual) throw new Error("AI 응답 오류가 발생했습니다. 다시 시도해 주세요");
+  if (invalidVisual) throw new Error(AI_RETRY_MESSAGE);
 
   const visualSpec = {
     ...spec,
@@ -847,7 +852,7 @@ function normalizeAiSummary(result, record) {
   };
 
   const qualityIssues = validateAiQuality({ summary, key_points: keyPoints, spec: visualSpec }, createAiSourcePayload(record));
-  if (qualityIssues.length > 0) throw new Error("AI 응답 오류가 발생했습니다. 다시 시도해 주세요");
+  if (qualityIssues.length > 0) throw new Error(AI_RETRY_MESSAGE);
 
   return {
     summary,
@@ -1006,12 +1011,12 @@ async function runAiSummary(record) {
     try {
       result = await response.json();
     } catch {
-      throw new Error("AI 응답 오류가 발생했습니다. 다시 시도해 주세요");
+      throw new Error(AI_RETRY_MESSAGE);
     }
 
     if (!response.ok) {
       if (result.code === "AI_RESPONSE_INVALID") {
-        throw new Error("AI 응답 오류가 발생했습니다. 다시 시도해 주세요");
+        throw new Error(result.error || AI_RETRY_MESSAGE);
       }
       throw new Error(result.error || "AI 호출 실패. 서버 연결을 확인한 뒤 다시 시도해 주세요.");
     }

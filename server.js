@@ -1,12 +1,14 @@
 import { createServer as createHttpServer } from "node:http";
 import { createReadStream } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AiServiceError, requestAiSummary } from "./ai-service.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(ROOT, "dist");
+const DIAGNOSTIC_LOG = path.join(ROOT, ".opencode", "ai-response-diagnostics.jsonl");
+const DIAGNOSTIC_LOG_LIMIT = 4 * 1024 * 1024;
 const BODY_LIMIT = 16 * 1024 * 1024;
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -53,14 +55,30 @@ function getServiceConfig() {
 
 async function getContractAssets() {
   try {
-    const [contractText, sampleText] = await Promise.all([
+    const [contractText, dataContractText, sampleText] = await Promise.all([
       readFile(path.join(ROOT, "VISUALIZATION-SPEC.md"), "utf8"),
+      readFile(path.join(ROOT, "docs", "data-contract.md"), "utf8"),
       readFile(path.join(ROOT, "public", "test-fixtures", "sample-visual-spec.json"), "utf8"),
     ]);
-    return { contractText, sampleSpec: JSON.parse(sampleText) };
+    return { contractText, dataContractText, sampleSpec: JSON.parse(sampleText) };
   } catch {
     throw new AiServiceError("AI_NOT_CONFIGURED", "시각화 규격 자료를 불러오지 못했습니다.");
   }
+}
+
+async function logAiResponseDiagnostic(entry) {
+  await mkdir(path.dirname(DIAGNOSTIC_LOG), { recursive: true, mode: 0o700 });
+  try {
+    const info = await stat(DIAGNOSTIC_LOG);
+    if (info.size > DIAGNOSTIC_LOG_LIMIT) {
+      await rename(DIAGNOSTIC_LOG, `${DIAGNOSTIC_LOG}.previous`).catch(() => {});
+    }
+  } catch {
+    // The first diagnostic entry creates the log.
+  }
+
+  const line = `${JSON.stringify({ timestamp: new Date().toISOString(), ...entry })}\n`;
+  await appendFile(DIAGNOSTIC_LOG, line, { encoding: "utf8", mode: 0o600 });
 }
 
 function sendJson(response, statusCode, payload) {
@@ -84,14 +102,30 @@ async function handleAiRequest(request, response) {
     const result = await requestAiSummary(payload.document, {
       ...getServiceConfig(),
       ...assets,
+      onDiagnostic: async (entry) => {
+        try {
+          await logAiResponseDiagnostic({
+            model: "jitda-chat",
+            document_type: payload.document?.type || "unknown",
+            ...entry,
+          });
+        } catch {
+          process.stderr.write("[grappler-ai] 진단 로그를 저장하지 못했습니다.\n");
+        }
+      },
     });
     sendJson(response, 200, result);
   } catch (error) {
     const code = error instanceof AiServiceError ? error.code : "AI_CALL_FAILED";
-    const message = error instanceof AiServiceError
-      ? error.message
+    const message = error instanceof AiServiceError && ["AI_RESPONSE_INVALID", "AI_CALL_FAILED"].includes(error.code)
+      ? "잠시 후 다시 시도해 주세요"
+      : error instanceof AiServiceError
+        ? error.message
       : "AI 서비스 요청에 실패했습니다. 다시 시도해 주세요.";
-    const status = code === "INVALID_DOCUMENT" ? 400 : code === "NO_ANALYZABLE_CONTENT" ? 422 : code === "AI_NOT_CONFIGURED" ? 503 : 502;
+    const status = code === "INVALID_DOCUMENT" ? 400
+      : code === "NO_ANALYZABLE_CONTENT" ? 422
+        : code === "AI_NOT_CONFIGURED" || code === "AI_RESPONSE_INVALID" || code === "AI_CALL_FAILED" ? 503
+          : 502;
     sendJson(response, status, { error: message, code });
   }
 }

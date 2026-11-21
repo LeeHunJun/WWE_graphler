@@ -8,6 +8,12 @@ const VISUAL_TYPES = new Set([
   "timeline",
   "kpi_cards",
 ]);
+const ENGLISH_MONTHS = new Map([
+  ["jan", 1], ["january", 1], ["feb", 2], ["february", 2], ["mar", 3], ["march", 3],
+  ["apr", 4], ["april", 4], ["may", 5], ["jun", 6], ["june", 6], ["jul", 7], ["july", 7],
+  ["aug", 8], ["august", 8], ["sep", 9], ["sept", 9], ["september", 9], ["oct", 10], ["october", 10],
+  ["nov", 11], ["november", 11], ["dec", 12], ["december", 12],
+]);
 const HIGHLIGHT_LEVELS = new Set(["critical", "important", "info"]);
 const LEVEL_LABELS = { critical: "긴급", important: "중요", info: "참고" };
 const LEVEL_COLORS = { critical: "#c75850", important: "#db923f", info: "#89928b" };
@@ -66,6 +72,9 @@ export function parseTemporal(value) {
 
   match = text.match(/^(\d{1,2})\s*월$/);
   if (match && Number(match[1]) >= 1 && Number(match[1]) <= 12) return 20000000 + Number(match[1]) * 100;
+
+  const month = ENGLISH_MONTHS.get(text.toLocaleLowerCase("en"));
+  if (month) return 20000000 + month * 100;
 
   if (/^\d{4}$/.test(text) && Number(text) >= 1900 && Number(text) <= 2200) return Number(text) * 10000;
 
@@ -565,7 +574,7 @@ function validateDerived(derived) {
     && (derived.result === null || (typeof derived.result === "number" && Number.isFinite(derived.result)));
 }
 
-function getHighlightTargetSourceIds(visual, target) {
+export function getHighlightTargetSourceIds(visual, target) {
   const data = visual.data;
   if (visual.type === "line_chart") {
     const series = data.series.find((item) => item.id === target.series_id);
@@ -587,7 +596,25 @@ function getHighlightTargetSourceIds(visual, target) {
   return data.cards.find((card) => card.id === target.card_id)?.source_ids || [];
 }
 
-function getVisualDataSourceIds(visual) {
+export function getAllowedHighlightSourceIds(visual, target, derived) {
+  const targetSourceIds = getHighlightTargetSourceIds(visual, target);
+  const allowed = new Set(targetSourceIds);
+  if (visual.type === "line_chart" && derived && target.point_index > 0) {
+    const series = visual.data.series.find((item) => item.id === target.series_id);
+    const previousSourceId = series?.source_ids[target.point_index - 1];
+    if (isText(previousSourceId)) allowed.add(previousSourceId);
+  }
+  getVisualHeaderSourceIds(visual).forEach((sourceId) => allowed.add(sourceId));
+  if (visual.type === "bar_chart" && derived) {
+    const targetSheet = targetSourceIds[0]?.match(/^(sheet:\d+):row:\d+$/)?.[1];
+    visual.source_ids.forEach((sourceId) => {
+      if (targetSheet && sourceId.startsWith(`${targetSheet}:row:`)) allowed.add(sourceId);
+    });
+  }
+  return [...allowed];
+}
+
+export function getVisualDataSourceIds(visual) {
   const data = visual.data;
   if (visual.type === "line_chart") return data.series.flatMap((series) => series.source_ids.filter(isText));
   if (visual.type === "bar_chart") return data.source_ids.filter(isText);
@@ -645,20 +672,7 @@ export function validateHighlight(visual, highlight) {
   if (!hasHighlightTarget(visual, highlight.target)) return "강조 대상이 시각화 자료와 맞지 않습니다.";
 
   const targetSourceIds = getHighlightTargetSourceIds(visual, highlight.target);
-  const allowedSourceIds = new Set([...targetSourceIds, ...getVisualHeaderSourceIds(visual)]);
-  if (visual.type === "line_chart" && highlight.derived && highlight.target.point_index > 0) {
-    const series = visual.data.series.find((item) => item.id === highlight.target.series_id);
-    const previousSourceId = series?.source_ids[highlight.target.point_index - 1];
-    if (isText(previousSourceId)) allowedSourceIds.add(previousSourceId);
-  }
-  if (visual.type === "bar_chart" && highlight.derived) {
-    const extraIds = highlight.source_ids.filter((sourceId) => !allowedSourceIds.has(sourceId));
-    const targetSheet = targetSourceIds[0]?.match(/^(sheet:\d+):row:\d+$/)?.[1];
-    if (extraIds.length > 1 || extraIds.some((sourceId) => !targetSheet || !sourceId.startsWith(`${targetSheet}:row:`))) {
-      return "강조 source_ids가 대상 점·행·일정·노드와 맞지 않습니다.";
-    }
-    extraIds.forEach((sourceId) => allowedSourceIds.add(sourceId));
-  }
+  const allowedSourceIds = new Set(getAllowedHighlightSourceIds(visual, highlight.target, highlight.derived));
   if (targetSourceIds.length === 0
     || targetSourceIds.some((sourceId) => !highlight.source_ids.includes(sourceId))
     || highlight.source_ids.some((sourceId) => !allowedSourceIds.has(sourceId))) {

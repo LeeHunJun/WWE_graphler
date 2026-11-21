@@ -9,8 +9,9 @@ const RISK_PATTERN = /(위험|리스크|긴급|지연|초과|부족|장애|오�
 const PRIORITY_PATTERN = /(보안|필수|금지|주의|목표|미달|준수|중요|mandatory|prohibit|security|target|missed)/i;
 const STRICT_PRIORITY_PATTERN = /(필수|반드시|금지|의무|절대\s*금지|must\s+not|required|mandatory|prohibited)/i;
 const DATE_PATTERN = /(?:\d{4}\s*년\s*\d{1,2}\s*월(?:\s*\d{1,2}\s*일)?|\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?|(?:[1-4]\s*분기|Q[1-4])|\d{1,2}\s*월(?:\s*\d{1,2}\s*일)?)/gi;
-const PERIOD_PATTERN = /(?:\bQ[1-4]\b|[1-4]\s*분기|\d{1,2}\s*월|\d{4}[-/.]\d{1,2}(?![-/.]\d))/gi;
+const PERIOD_PATTERN = /(?:\bQ[1-4]\b|[1-4]\s*분기|\d{1,2}\s*월|\d{4}[-/.]\d{1,2}(?![-/.]\d)|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b)/gi;
 const COMPARE_PATTERN = /(전\s*후|변경\s*전|변경\s*후|비교|차이|대비|vs\.?|versus|compared?\s+to)/i;
+const TREND_SUMMARY_PATTERN = /(증가|감소|상승|하락|높|낮|늘(?:었|어)|줄(?:었|어)|오르내|등락|추이|증감|변화|increase|decrease|rise|rose|fall|fell|trend|higher|lower|grew|declin)/i;
 
 function unique(values) {
   return [...new Set(values)];
@@ -47,7 +48,12 @@ function getNumericCorpus(sourceIds, sourceMap, visual) {
   for (const highlight of visual.highlights || []) {
     if (!highlight?.derived || !Array.isArray(highlight.source_ids)) continue;
     if (!highlight.source_ids.some((id) => sourceIds.includes(id))) continue;
-    if (highlight.derived.result !== undefined) texts.push(String(highlight.derived.result));
+    if (highlight.derived.result !== undefined) {
+      texts.push(String(highlight.derived.result));
+      if (typeof highlight.derived.result === "number" && Number.isFinite(highlight.derived.result)) {
+        texts.push(Math.abs(highlight.derived.result).toFixed(1));
+      }
+    }
   }
   return texts.join("\n");
 }
@@ -61,7 +67,7 @@ function numericClaimIsGrounded(value, sourceIds, sourceMap, visual) {
     && Math.abs(highlight.derived.result - value) < 1e-9);
 }
 
-function validateVisualGrounding(visual, sourceMap) {
+export function validateVisualGrounding(visual, sourceMap) {
   const sourceIds = visual.source_ids;
   const visualText = sourceIds.map((id) => sourceMap.get(id) || "").join("\n");
   if (!hasOnlySupportedNumbers(`${visual.title} ${visual.caption}`, getNumericCorpus(sourceIds, sourceMap, visual))) {
@@ -154,7 +160,9 @@ function validateVisualGrounding(visual, sourceMap) {
       && numericValues(sourceText).length === 0) {
       return "원문에서 중요도를 확인할 수 없는 내용을 critical 또는 important로 강조했습니다.";
     }
-    const derivedResult = highlight.derived ? String(highlight.derived.result ?? "") : "";
+    const derivedResult = highlight.derived
+      ? [String(highlight.derived.result ?? ""), ...(typeof highlight.derived.result === "number" ? [Math.abs(highlight.derived.result).toFixed(1)] : [])].join(" ")
+      : "";
     if (highlight.derived && highlight.derived.original_values.some((item) => {
       if (typeof item.value === "number") return !highlight.source_ids.some((sourceId) => hasSupportedNumericValue(item.value, sourceMap.get(sourceId) || ""));
       return typeof item.value === "string" && !hasOnlySupportedNumbers(item.value, sourceText);
@@ -239,6 +247,53 @@ function getSignalSources(sources) {
   };
 }
 
+function getCategoricalNumericGroups(sources) {
+  const sheetRows = new Map();
+  for (const source of sources) {
+    const match = source.source_id.match(/^sheet:(\d+):row:(\d+)$/);
+    if (!match) continue;
+    const sheetIndex = Number(match[1]);
+    const rowNumber = Number(match[2]);
+    const cells = source.text.split("|").map((cell) => cell.trim());
+    if (!sheetRows.has(sheetIndex)) sheetRows.set(sheetIndex, []);
+    sheetRows.get(sheetIndex).push({ sourceId: source.source_id, rowNumber, cells });
+  }
+
+  const groups = [];
+  for (const rows of sheetRows.values()) {
+    rows.sort((first, second) => first.rowNumber - second.rowNumber);
+    const header = rows.find((row) => row.cells.some(Boolean));
+    if (!header) continue;
+    const dataRows = rows.filter((row) => row !== header && row.cells.some(Boolean));
+    if (dataRows.length < 2) continue;
+
+    const columnCount = Math.max(header.cells.length, ...dataRows.map((row) => row.cells.length));
+    let categoryColumn = -1;
+    let temporalAxis = false;
+    for (let column = 0; column < columnCount; column += 1) {
+      const values = dataRows.map((row) => row.cells[column] || "").filter(Boolean);
+      if (values.length < 2) continue;
+      if (values.every((value) => parseTemporal(value) !== null)) {
+        temporalAxis = true;
+        break;
+      }
+      if (values.some((value) => numericValues(value).length === 0)) {
+        categoryColumn = column;
+        break;
+      }
+    }
+    if (temporalAxis || categoryColumn < 0) continue;
+
+    const numericColumns = [];
+    for (let column = 0; column < columnCount; column += 1) {
+      if (column === categoryColumn) continue;
+      if (dataRows.filter((row) => numericValues(row.cells[column] || "").length > 0).length >= 2) numericColumns.push(column);
+    }
+    if (numericColumns.length > 0) groups.push(unique(dataRows.map((row) => row.sourceId)));
+  }
+  return groups;
+}
+
 function getVisualSources(visual) {
   return unique(extractReferences(visual));
 }
@@ -267,6 +322,23 @@ function hasDirectionMismatch(text, change) {
   const saysDecrease = /(감소|하락|줄었|줄어|decreas|drop|fell|declin)/i.test(text);
   return (change < 0 && saysIncrease && !saysDecrease)
     || (change > 0 && saysDecrease && !saysIncrease);
+}
+
+function summaryCoversChangeRange(item, highlight, document, sourceMap) {
+  if (document.type === "pdf") {
+    const periods = (highlight.derived?.original_values || [])
+      .map((value) => getPeriodTokens(String(value.label || ""))[0])
+      .filter(Boolean);
+    const summaryPeriods = getPeriodTokens(item.text).map((period) => period.toLocaleLowerCase("en"));
+    return periods.length >= 2 && periods.every((period) => summaryPeriods.includes(period.toLocaleLowerCase("en")));
+  }
+
+  const getNumericSources = (ids) => unique(ids.filter((sourceId) => numericValues(sourceMap.get(sourceId) || "").length > 0)).sort();
+  const summarySources = getNumericSources(item.source_ids);
+  const changeSources = getNumericSources(highlight.source_ids);
+  return summarySources.length > 0
+    && summarySources.length === changeSources.length
+    && summarySources.every((sourceId, index) => sourceId === changeSources[index]);
 }
 
 function hasDuplicateKeyPoints(keyPoints) {
@@ -351,7 +423,7 @@ export function validateAiQuality(result, document) {
   for (const item of [...result.summary, ...result.key_points]) {
     const mismatchedChange = visuals.some((visual) => visual.highlights.some((highlight) =>
       highlight.derived
-      && highlight.source_ids.some((sourceId) => item.source_ids.includes(sourceId))
+      && summaryCoversChangeRange(item, highlight, document, sourceMap)
       && hasDirectionMismatch(item.text, highlight.derived.result)));
     if (mismatchedChange) issues.push("요약의 증가·감소 표현이 원문 수치 변화와 반대입니다.");
   }
@@ -393,26 +465,40 @@ export function validateAiQuality(result, document) {
       && visual.source_ids.some((sourceId) => signals.schedule.includes(sourceId)));
     if (scheduleVisuals.length === 0) {
       issues.push("원문에 날짜가 있는 일정·마감이 있지만 timeline으로 표현하지 않았습니다.");
-    } else {
-      for (const visual of scheduleVisuals) {
-        for (const item of visual.data.items) {
-          if (!item.source_ids.some((sourceId) => signals.schedule.includes(sourceId))) continue;
-          const highlighted = visual.highlights.some((highlight) => highlight.target.item_id === item.id
-            && ["critical", "important"].includes(highlight.level)
-            && item.source_ids.some((sourceId) => highlight.source_ids.includes(sourceId)));
-          if (!highlighted) issues.push(`일정 ${item.label}에 critical 또는 important 강조가 없습니다.`);
-        }
-      }
+    } else if (!scheduleVisuals.some((visual) => visual.data.items.some((item) =>
+      item.source_ids.some((sourceId) => signals.schedule.includes(sourceId))
+      && visual.highlights.some((highlight) => highlight.target.item_id === item.id
+        && ["critical", "important"].includes(highlight.level)
+        && item.source_ids.some((sourceId) => highlight.source_ids.includes(sourceId)))))) {
+      issues.push("timeline에서 핵심 일정에 critical 또는 important 강조가 없습니다.");
     }
   }
 
   if (signals.timeSeries && !hasTemporalLineChart(visuals, signals.periodSources)) {
     issues.push("원문에 시간 순서 수치 변화가 있지만 line_chart로 표현하지 않았습니다.");
   }
+  if ((document.type === "csv" || document.type === "excel") && signals.timeSeries) {
+    const hasNarrativeTrend = result.summary.some((item) => {
+      const referencedPeriods = unique(item.source_ids.filter((sourceId) => {
+        const sourceText = sourceMap.get(sourceId) || "";
+        return getPeriodTokens(sourceText).length > 0 && numericValues(sourceText).length > 0;
+      }));
+      return referencedPeriods.length >= 2 && TREND_SUMMARY_PATTERN.test(item.text);
+    });
+    if (!hasNarrativeTrend) issues.push("시계열 수치의 전체 요약에 기간 간 변화 방향이 없습니다. 숫자 나열 대신 무엇이 어떻게 변했는지 한 문장으로 설명하세요.");
+  }
 
   if (signals.comparison.length > 0 && !signals.timeSeries
     && !hasVisualTypeForSources(visuals, ["bar_chart", "comparison_table"], signals.comparison)) {
     issues.push("원문에 항목 간 수치 비교가 있지만 bar_chart 또는 comparison_table로 표현하지 않았습니다.");
+  }
+
+  if (document.type === "csv" || document.type === "excel") {
+    for (const groupSourceIds of getCategoricalNumericGroups(document.sources)) {
+      if (!hasVisualTypeForSources(visuals, ["bar_chart", "comparison_table"], groupSourceIds)) {
+        issues.push("범주별 숫자 자료는 bar_chart 또는 comparison_table로 표현해야 합니다.");
+      }
+    }
   }
 
   if (signals.change.length > 0) {
@@ -438,6 +524,9 @@ export function validateAiQuality(result, document) {
   }
 
   for (const visual of visuals) {
+    if (visual.type === "bar_chart" && visual.data.labels.length > 10) {
+      issues.push(`${visual.title}: bar_chart는 상위 10개 항목까지만 표시해야 합니다.`);
+    }
     if (visual.type === "flowchart" && !signals.process.some((sourceId) => visual.source_ids.includes(sourceId))) {
       issues.push(`${visual.title}: 원문에서 확인되지 않는 업무 절차 도식입니다.`);
     }
