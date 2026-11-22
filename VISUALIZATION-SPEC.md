@@ -209,13 +209,13 @@ Node ids must be unique. Every edge must refer to existing nodes. Nodes are disp
 
 ## Automatic CSV and XLSX Rules
 
-- The first non-empty text or date column is used as the category axis. A recognized date, month, quarter, or year axis selects `line_chart`; other categories select `bar_chart`.
+- The first non-empty text or date column is used as the category axis. CSV/XLSX AI requests also send `computed_facts`, the highlights computed by these rules; the model explains them in plain language instead of recalculating them. A recognized date, month, quarter, or year axis selects `line_chart`; other categories select `bar_chart`.
 - Numeric columns are parsed independently. Empty cells remain `null` and appear as gaps, not zeroes.
 - A categorical bar chart keeps at most ten rows. When rows exceed ten, it sorts by numeric value descending and adds `상위 10개만 표시했습니다.` to the visual note and a numeric caption.
 - A time-series chart keeps at most four numeric series, ranked by the sum of absolute values. It does not discard dates.
-- Each chart adds at most three emphasis records: the largest decrease from the preceding source row is `critical`; maximum and minimum values are `important` unless the same point is already emphasized.
-- A decrease stores `(현재 값 - 직전 값) ÷ |직전 값| × 100` and both original values in `derived`.
-- If no numeric column exists, the spec message is `수치 데이터가 없어 그래프를 만들 수 없습니다`.
+- Each chart adds at most three emphasis records. A time-series line chart marks the largest decrease between adjacent non-empty points as `critical` and the largest increase as `important`; the renderer draws each as a shaded band between the two points. Maximum and minimum values are `important` unless the same point is already emphasized. Categorical bar charts only mark the maximum and minimum, because their row order has no meaning.
+- A decrease or increase stores `(현재 값 - 직전 값) ÷ |직전 값| × 100` and both original values in `derived`. Line charts are drawn with straight segments (no smoothing).
+- If no numeric column exists, the spec message names each problem column, why it cannot be charted, and how to fix the file. A table with only numeric columns uses row numbers as its category axis. Numeric columns with a few text cells (for example `100건`) are charted with those cells as gaps, and the message names the rows.
 - PDF specs stay in the AI-pending state until a later step supplies an AI spec.
 
 ## Validation and Partial Results
