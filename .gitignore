@@ -1,5 +1,2 @@
 .opencode/ai-response-diagnostics*
 .playwright-mcp/
-node_modules/
-dist/
-.env

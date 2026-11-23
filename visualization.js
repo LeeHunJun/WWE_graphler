@@ -1,6 +1,4 @@
 import Chart from "chart.js/auto";
-import { buildHeadline, buildQuiz, buildReportText } from "./insights.js";
-import { analyzeRecordQuality, describeMixedColumn, describeNoNumericColumns, parseNumericCell } from "./data-quality.js";
 
 const VISUAL_TYPES = new Set([
   "line_chart",
@@ -27,7 +25,24 @@ function sourceIdForRow(sheetIndex, sheet, rowIndex) {
   return `sheet:${sheetIndex}:row:${rowNumber}`;
 }
 
-const parseNumber = parseNumericCell;
+function parseNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (value === null || value === undefined) return null;
+
+  let normalized = String(value).trim();
+  if (!normalized) return null;
+
+  const isParenthesizedNegative = /^\(.*\)$/.test(normalized);
+  normalized = normalized
+    .replace(/[\s\u00a0,，_]/g, "")
+    .replace(/[₩$€£¥원%]/g, "")
+    .replace(/[−–]/g, "-");
+  if (isParenthesizedNegative) normalized = `-${normalized.slice(1, -1)}`;
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(normalized)) return null;
+
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
 
 export function parseTemporal(value) {
   const text = String(value ?? "").trim();
@@ -63,8 +78,6 @@ export function parseTemporal(value) {
 
   if (/^\d{4}$/.test(text) && Number(text) >= 1900 && Number(text) <= 2200) return Number(text) * 10000;
 
-  // "80"처럼 연도가 없는 숫자를 날짜로 오인하지 않도록 4자리 연도가 있을 때만 일반 날짜 파싱을 씁니다.
-  if (/^\d+(?:\.\d+)?$/.test(text) || !/\d{4}/.test(text)) return null;
   const timestamp = Date.parse(text);
   return Number.isNaN(timestamp) ? null : timestamp;
 }
@@ -144,74 +157,40 @@ function findExtrema(observations) {
   };
 }
 
-function findLargestChange(seriesEntries, points, pointIndexByRow, direction) {
-  let largest = null;
+function findLargestDrop(seriesEntries, points, labels, pointIndexByRow) {
+  let largestDrop = null;
 
   seriesEntries.forEach((series) => {
-    let previousPoint = null;
-    for (let index = 0; index < points.length; index += 1) {
+    for (let index = 1; index < points.length; index += 1) {
+      const previousValue = getSeriesValueAtRow(series.column, points[index - 1].rowOffset);
       const currentValue = getSeriesValueAtRow(series.column, points[index].rowOffset);
-      if (currentValue === null) continue;
-      const previous = previousPoint;
-      previousPoint = { point: points[index], value: currentValue, index };
-      if (!previous) continue;
-      // 결측 구간을 건너뛴 비교는 인접 변화로 보지 않습니다.
-      if (previous.index !== index - 1) continue;
-
-      const previousValue = previous.value;
-      const change = currentValue - previousValue;
-      if (direction === "down" ? change >= 0 : change <= 0) continue;
+      if (previousValue === null || currentValue === null || currentValue >= previousValue) continue;
 
       const visualIndex = pointIndexByRow.get(points[index].sourceId);
       if (visualIndex === undefined) continue;
-      const magnitude = Math.abs(change);
-      if (!largest || magnitude > largest.magnitude) {
-        largest = {
-          direction,
+      const decrease = previousValue - currentValue;
+      if (!largestDrop || decrease > largestDrop.decrease) {
+        largestDrop = {
           seriesId: series.id,
           seriesName: series.name,
           visualIndex,
           previousValue,
           currentValue,
-          previousLabel: previous.point.label,
+          previousLabel: points[index - 1].label,
           currentLabel: points[index].label,
-          previousSourceId: previous.point.sourceId,
+          previousSourceId: points[index - 1].sourceId,
           currentSourceId: points[index].sourceId,
-          magnitude,
+          decrease,
           unit: series.column.unit || "",
         };
       }
     }
   });
 
-  return largest;
+  return largestDrop;
 }
 
-function createChangeHighlight(change, extremaNote = "") {
-  const percent = change.previousValue === 0
-    ? null
-    : Number((((change.currentValue - change.previousValue) / Math.abs(change.previousValue)) * 100).toFixed(2));
-  const isDrop = change.direction === "down";
-  const verb = isDrop ? "줄었습니다" : "늘었습니다";
-  const rateText = percent === null ? "" : ` (${Math.abs(percent)}% ${isDrop ? "감소" : "증가"})`;
-  return {
-    target: { series_id: change.seriesId, point_index: change.visualIndex },
-    level: isDrop ? "critical" : "important",
-    label: `${isDrop ? "최대 하락" : "최대 상승"} ${change.previousLabel}→${change.currentLabel}`,
-    reason: `${change.previousLabel} ${formatNumber(change.previousValue, change.unit)}에서 ${change.currentLabel} ${formatNumber(change.currentValue, change.unit)}까지 ${change.seriesName}이 가장 크게 ${verb}${rateText}.${extremaNote}`,
-    source_ids: [change.currentSourceId, change.previousSourceId],
-    derived: {
-      formula: "(현재 값 - 직전 값) ÷ |직전 값| × 100",
-      original_values: [
-        { label: `${change.previousLabel} ${change.seriesName}`, value: change.previousValue },
-        { label: `${change.currentLabel} ${change.seriesName}`, value: change.currentValue },
-      ],
-      result: percent,
-    },
-  };
-}
-
-function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, unit = "", { includeChanges = false } = {}) {
+function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, unit = "") {
   const observations = [];
   seriesEntries.forEach((series) => {
     points.forEach((point) => {
@@ -232,21 +211,29 @@ function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, un
   });
 
   const { maximum, minimum } = findExtrema(observations);
-  const isSamePoint = (change, observation) => Boolean(change && observation)
-    && change.visualIndex === observation.visualIndex
-    && change.seriesId === observation.seriesId;
-  const extremaNoteFor = (change) => {
-    if (isSamePoint(change, maximum)) return " 이 값은 전체 최고치입니다.";
-    if (isSamePoint(change, minimum)) return " 이 값은 전체 최저치입니다.";
-    return "";
-  };
-
+  const drop = findLargestDrop(seriesEntries, points, labels, pointIndexByRow);
   const highlights = [];
-  // 상승·하락 구간은 순서가 의미 있는 시계열에서만 계산합니다. 항목 비교 막대에는 최고·최저만 표시합니다.
-  const drop = includeChanges ? findLargestChange(seriesEntries, points, pointIndexByRow, "down") : null;
-  const rise = includeChanges ? findLargestChange(seriesEntries, points, pointIndexByRow, "up") : null;
-  if (drop) highlights.push(createChangeHighlight(drop, extremaNoteFor(drop)));
-  if (rise) highlights.push(createChangeHighlight(rise, extremaNoteFor(rise)));
+
+  if (drop) {
+    const percent = drop.previousValue === 0
+      ? null
+      : Number((((drop.currentValue - drop.previousValue) / Math.abs(drop.previousValue)) * 100).toFixed(2));
+    highlights.push({
+      target: { series_id: drop.seriesId, point_index: drop.visualIndex },
+      level: "critical",
+      label: `하락 ${formatNumber(drop.currentValue, drop.unit)}`,
+      reason: `${drop.previousLabel}에서 ${drop.currentLabel}로 ${drop.seriesName}이 가장 크게 줄었습니다${percent === null ? "" : ` (${Math.abs(percent)}% 감소)`}.`,
+      source_ids: [drop.currentSourceId, drop.previousSourceId],
+      derived: {
+        formula: "(현재 값 - 직전 값) ÷ |직전 값| × 100",
+        original_values: [
+          { label: `${drop.previousLabel} ${drop.seriesName}`, value: drop.previousValue },
+          { label: `${drop.currentLabel} ${drop.seriesName}`, value: drop.currentValue },
+        ],
+        result: percent,
+      },
+    });
+  }
 
   [
     { observation: maximum, label: "최고", reason: "이 시각화에서 가장 높은 수치입니다." },
@@ -262,7 +249,7 @@ function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, un
     highlights.push({
       target: { series_id: observation.seriesId, point_index: observation.visualIndex },
       level: "important",
-      label: `${label}${seriesEntries.length > 1 ? ` ${observation.seriesName}` : ""} ${formatNumber(observation.value, observation.unit)}`,
+      label: `${label} ${formatNumber(observation.value, observation.unit)}`,
       reason: `${reason} 해당 값은 ${formatNumber(observation.value, observation.unit)}입니다.`,
       source_ids: [observation.sourceId],
       derived: null,
@@ -340,7 +327,6 @@ function createAutoVisual(sheet, sheetIndex, axis, numericColumns) {
         labels,
         pointIndexByRow,
         primaryUnit,
-        { includeChanges: true },
       ),
     };
     return [visual];
@@ -395,8 +381,8 @@ export function buildSpreadsheetVisualizationSpec(record) {
 
   (record.sheets || []).forEach((sheet, sheetIndex) => {
     if (!Array.isArray(sheet.rows) || sheet.rows.length < 2) return;
-    // 글자 열이 없고 숫자 열만 있으면 행 번호를 항목 축으로 씁니다.
-    const axis = getAxisColumn(sheet.rows, sheet.columnCount) || { index: -1, temporal: false };
+    const axis = getAxisColumn(sheet.rows, sheet.columnCount);
+    if (!axis) return;
     const numericColumns = getNumericColumns(sheet, axis.index);
     if (numericColumns.length === 0) return;
     hasNumericColumn = true;
@@ -406,15 +392,14 @@ export function buildSpreadsheetVisualizationSpec(record) {
   if (!hasNumericColumn) {
     return {
       status: "ok",
-      message: describeNoNumericColumns(record),
+      message: "수치 데이터가 없어 그래프를 만들 수 없습니다",
       visuals: [],
     };
   }
 
-  const mixedNotes = analyzeRecordQuality(record).mixedColumns.slice(0, 2).map(describeMixedColumn);
   return {
     status: "ok",
-    message: ["표의 첫 번째 항목 열과 숫자 열을 바탕으로 시각화를 만들었습니다.", ...mixedNotes].join(" "),
+    message: "표의 첫 번째 항목 열과 숫자 열을 바탕으로 시각화를 만들었습니다.",
     visuals,
   };
 }
@@ -790,48 +775,8 @@ function createChartCanvas(content, label) {
   return { wrap, canvas };
 }
 
-function hexToRgba(hex, alpha) {
-  const value = hex.replace("#", "");
-  const [red, green, blue] = [0, 2, 4].map((offset) => parseInt(value.slice(offset, offset + 2), 16));
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
-}
-
-// 직전 점과 비교한 변화 강조(derived가 있는 강조)는 두 점 사이 구간으로 그립니다.
-export function getChangeSegments(visual, highlights) {
-  if (visual.type !== "line_chart") return [];
-  return highlights.flatMap((highlight) => {
-    const target = highlight.target;
-    if (!highlight.derived || !Number.isInteger(target?.point_index) || target.point_index < 1) return [];
-    const series = visual.data.series.find((item) => item.id === target.series_id);
-    if (!series) return [];
-    const startIndex = target.point_index - 1;
-    if (series.values[startIndex] === null || series.values[target.point_index] === null) return [];
-    return [{ seriesId: series.id, startIndex, endIndex: target.point_index, level: highlight.level }];
-  });
-}
-
-const changeBandPlugin = {
-  id: "grapplerChangeBands",
-  beforeDatasetsDraw(chart, _args, options) {
-    const segments = options?.segments || [];
-    if (segments.length === 0) return;
-    const { ctx, chartArea, scales } = chart;
-    ctx.save();
-    segments.forEach((segment) => {
-      const start = scales.x.getPixelForValue(segment.startIndex);
-      const end = scales.x.getPixelForValue(segment.endIndex);
-      ctx.fillStyle = hexToRgba(LEVEL_COLORS[segment.level] || LEVEL_COLORS.info, 0.12);
-      ctx.fillRect(Math.min(start, end), chartArea.top, Math.abs(end - start), chartArea.bottom - chartArea.top);
-    });
-    ctx.restore();
-  },
-};
-
 function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, chartList) {
   const targetLevels = getTargetHighlightMap(visual, highlights);
-  const changeSegments = getChangeSegments(visual, highlights);
-  const segmentLevel = (seriesId, startIndex, endIndex) => changeSegments
-    .find((segment) => segment.seriesId === seriesId && segment.startIndex === startIndex && segment.endIndex === endIndex)?.level;
   const accessibleDescription = visual.data.series
     .map((series) => `${series.name}: ${series.values.map((value) => value === null ? "결측" : value).join(", ")}`)
     .join(". ");
@@ -853,30 +798,18 @@ function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, ch
     pointRadius: series.values.map((_, pointIndex) => targetLevels.has(`${series.id}:${pointIndex}`) ? 5 : 3),
     pointHoverRadius: 6,
     borderWidth: 2,
-    // 실제 값 사이를 곡선으로 부풀리지 않도록 직선으로 잇습니다.
-    tension: 0,
+    tension: 0.25,
     spanGaps: false,
-    segment: {
-      borderColor(context) {
-        const level = segmentLevel(series.id, context.p0DataIndex, context.p1DataIndex);
-        return level ? LEVEL_COLORS[level] : undefined;
-      },
-      borderWidth(context) {
-        return segmentLevel(series.id, context.p0DataIndex, context.p1DataIndex) ? 4 : undefined;
-      },
-    },
   }));
 
   const chart = new Chart(canvas, {
     type: "line",
     data: { labels: visual.data.labels, datasets },
-    plugins: [changeBandPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: "nearest", intersect: true },
       plugins: {
-        grapplerChangeBands: { segments: changeSegments },
         legend: { display: datasets.length > 1, labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true, font: { size: 9 } } },
         tooltip: {
           callbacks: {
@@ -1175,116 +1108,6 @@ function renderVisualContent(visual, content, highlights, sourceLookup, onNaviga
   return drawKpiCards(visual, content, sourceLookup, onNavigate);
 }
 
-function renderHeadline(card, visual, highlights) {
-  const headline = buildHeadline(visual, highlights);
-  if (!headline) return;
-  const element = createElement("p", "visual-headline", headline);
-  card.querySelector(".visual-card-title-row").after(element);
-}
-
-function renderQuiz(card, visual, highlights) {
-  const quiz = buildQuiz(visual, highlights);
-  if (!quiz) return false;
-  const box = createElement("section", "visual-quiz");
-  box.append(createElement("h4", "visual-quiz-heading", "이해 확인 질문"));
-  box.append(createElement("p", "visual-quiz-question", quiz.question));
-  const options = createElement("div", "visual-quiz-options");
-  const result = createElement("p", "visual-quiz-result");
-  result.setAttribute("role", "status");
-  quiz.options.forEach((option) => {
-    const button = createElement("button", "visual-quiz-option", option.label);
-    button.type = "button";
-    button.addEventListener("click", () => {
-      options.querySelectorAll("button").forEach((item, index) => {
-        item.disabled = true;
-        if (quiz.options[index].correct) item.classList.add("is-correct");
-      });
-      if (!option.correct) button.classList.add("is-wrong");
-      result.textContent = `${option.correct ? "정답이에요!" : "아쉬워요."} ${quiz.explanation}`;
-      result.classList.toggle("is-correct", option.correct);
-      if (quiz.highlightIndex !== null) {
-        card.querySelectorAll(".visual-highlight-button")[quiz.highlightIndex]?.click();
-      }
-    });
-    options.append(button);
-  });
-  box.append(options, result);
-  card.append(box);
-  return true;
-}
-
-function safeFileName(text) {
-  return String(text).replace(/[\\/:*?"<>|]/g, "_");
-}
-
-const EXPORT_CHART_SIZE = { width: 720, height: 360 };
-
-function downloadChartImage(visual, highlights, chart) {
-  // 화면 속 작은 그래프 대신 보고서용 크기로 잠시 다시 그린 뒤 저장하고, 원래 크기로 되돌립니다.
-  chart.resize(EXPORT_CHART_SIZE.width, EXPORT_CHART_SIZE.height);
-  chart.draw();
-  const source = chart.canvas;
-  const scale = source.width / EXPORT_CHART_SIZE.width;
-  const padding = Math.round(20 * scale);
-  const headline = buildHeadline(visual, highlights);
-  const headerHeight = Math.round((headline ? 64 : 34) * scale);
-  const image = document.createElement("canvas");
-  image.width = source.width + padding * 2;
-  image.height = source.height + headerHeight + padding * 2;
-  const context = image.getContext("2d");
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, image.width, image.height);
-  context.fillStyle = "#1f2a22";
-  context.font = `600 ${Math.round(16 * scale)}px sans-serif`;
-  context.fillText(visual.title, padding, padding + Math.round(16 * scale));
-  if (headline) {
-    context.fillStyle = "#c75850";
-    context.font = `700 ${Math.round(20 * scale)}px sans-serif`;
-    context.fillText(headline, padding, padding + Math.round(46 * scale), image.width - padding * 2);
-  }
-  context.drawImage(source, padding, padding + headerHeight);
-  chart.resize();
-  const link = document.createElement("a");
-  link.href = image.toDataURL("image/png");
-  link.download = `${safeFileName(visual.title)}.png`;
-  link.click();
-}
-
-function renderReportActions(card, visual, highlights, sourceLookup, chart) {
-  const actions = createElement("div", "visual-report-actions");
-  actions.append(createElement("span", "visual-report-label", "보고서에 쓰기"));
-  const status = createElement("span", "visual-report-status");
-  status.setAttribute("role", "status");
-
-  const copyButton = createElement("button", "visual-report-button", "요약 복사");
-  copyButton.type = "button";
-  copyButton.addEventListener("click", async () => {
-    const text = buildReportText(visual, highlights, sourceLookup);
-    try {
-      await navigator.clipboard.writeText(text);
-      status.textContent = "근거가 붙은 요약을 복사했어요.";
-    } catch {
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = `${safeFileName(visual.title)}.txt`;
-      link.click();
-      URL.revokeObjectURL(link.href);
-      status.textContent = "복사가 막혀 있어 텍스트 파일로 저장했어요.";
-    }
-  });
-
-  const imageButton = createElement("button", "visual-report-button", "그래프 이미지 저장");
-  imageButton.type = "button";
-  imageButton.addEventListener("click", () => {
-    downloadChartImage(visual, highlights, chart);
-    status.textContent = "강조가 들어간 그래프 이미지를 저장했어요.";
-  });
-
-  actions.append(copyButton, imageButton, status);
-  card.querySelector(".visual-card-content").after(actions);
-}
-
 export function renderVisuals(spec, { container, sourceDocument = null, onNavigate } = {}) {
   if (!container) return { renderedCount: 0, warnings: ["시각화를 표시할 영역이 없습니다."] };
   chartInstances.get(container)?.forEach((chart) => {
@@ -1340,18 +1163,12 @@ export function renderVisuals(spec, { container, sourceDocument = null, onNaviga
   let renderedCount = 0;
   let drawFailed = false;
 
-  let quizShown = false;
   prepared.forEach(({ visual, highlights }) => {
     const { card, content } = createCard(visual);
     container.append(card);
     try {
-      const chartCountBefore = chartList.length;
-      renderHeadline(card, visual, highlights);
       renderVisualContent(visual, content, highlights, sourceLookup, onNavigate, chartList);
       renderHighlights(card, visual, highlights, sourceLookup, onNavigate);
-      const chart = chartList.length > chartCountBefore ? chartList.at(-1) : null;
-      if (chart) renderReportActions(card, visual, highlights, sourceLookup, chart);
-      if (!quizShown) quizShown = renderQuiz(card, visual, highlights);
       renderedCount += 1;
     } catch (error) {
       card.remove();

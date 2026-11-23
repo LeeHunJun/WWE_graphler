@@ -1,4 +1,3 @@
-import { analyzeRecordQuality, describeMixedColumn } from "./data-quality.js";
 import { buildSpreadsheetVisualizationSpec, getHighlightIdentity, getSourceLookup, renderVisuals, validateHighlight, validateVisual } from "./visualization.js";
 import { hasOnlySupportedNumbers, hasSupportedNumericValue, isSupportedByEvidence } from "./source-evidence.js";
 import { validateAiQuality } from "./ai-quality.js";
@@ -184,20 +183,12 @@ function decodeCsv(buffer) {
   );
   const decode = (encoding) => new TextDecoder(encoding, { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
 
-  const decodeOrFail = (encoding) => {
-    try {
-      return decode(encoding);
-    } catch {
-      return null;
-    }
-  };
-
-  const text = hasBom
-    ? decodeOrFail(bytes[0] === 0xff ? "utf-16le" : "utf-16be")
-    : decodeOrFail("utf-8") ?? decodeOrFail("euc-kr");
-  // 어떤 인코딩으로도 읽히지 않거나 이미 깨진 글자(�)가 들어 있으면 저장 방식을 안내합니다.
-  if (text === null || text.includes("�")) throw new FileProcessingError("encoding");
-  return text;
+  if (hasBom) return decode(bytes[0] === 0xff ? "utf-16le" : "utf-16be");
+  try {
+    return decode("utf-8");
+  } catch {
+    return decode("euc-kr");
+  }
 }
 
 function detectDelimiter(text) {
@@ -373,8 +364,6 @@ function getErrorMessage(error) {
       return "파일 크기 제한은 10MB입니다. 더 작은 파일을 선택해 주세요.";
     case "unreadable":
       return UNREADABLE_MESSAGE;
-    case "encoding":
-      return "한글이 깨져서 읽을 수 없어요. 엑셀에서 '다른 이름으로 저장' → 'CSV UTF-8(쉼표로 분리)'로 저장한 뒤 다시 올려 주세요.";
     case "no-content":
       return "분석할 내용이 없습니다. 표에 제목 행 외에 데이터가 있는지 확인해 주세요.";
     case "storage":
@@ -667,58 +656,15 @@ function renderPreview(record, focusSourceId = null) {
     renderPdfPreview(record, focusSourceId);
   } else if (record.type === "csv") {
     const sheet = record.sheets[0];
-    const quality = analyzeRecordQuality(record);
     addPreviewMeta("행", `${sheet.rowCount}행`);
     addPreviewMeta("열", `${sheet.columnCount}열`);
-    addPreviewMeta("빈 값", `${quality.emptyCellCount}칸`);
-    renderColumnSummary(quality);
     renderSpreadsheetPreview(record, focusSourceId);
   } else {
-    const quality = analyzeRecordQuality(record);
     addPreviewMeta("시트", `${record.sheets.length}개`);
     addPreviewMeta("총 행", `${getTotalRows(record)}행`);
-    addPreviewMeta("빈 값", `${quality.emptyCellCount}칸`);
-    renderColumnSummary(quality);
     renderSpreadsheetPreview(record, focusSourceId);
   }
   focusPreviewSource(focusSourceId);
-}
-
-const COLUMN_KIND_LABELS = { numeric: "숫자", date: "날짜", text: "글자", mixed: "숫자+글자 섞임", empty: "비어 있음" };
-
-function renderColumnSummary(quality) {
-  const section = document.createElement("section");
-  section.className = "column-summary";
-  const multipleSheets = quality.sheets.length > 1;
-  section.append(createPreviewHeading("열 정보", "열 이름 · 값 종류 · 빈 값"));
-
-  const list = document.createElement("ul");
-  list.className = "column-summary-list";
-  quality.sheets.slice(0, 3).forEach((sheet) => {
-    sheet.columns.slice(0, 12).forEach((column) => {
-      const item = document.createElement("li");
-      item.className = `column-summary-item column-kind-${column.kind}`;
-      const name = document.createElement("strong");
-      name.textContent = multipleSheets ? `${sheet.name} · ${column.name}` : column.name;
-      const kind = document.createElement("span");
-      kind.className = "column-kind";
-      kind.textContent = COLUMN_KIND_LABELS[column.kind];
-      const empty = document.createElement("span");
-      empty.className = "column-empty";
-      empty.textContent = column.emptyCount > 0 ? `빈 값 ${column.emptyCount}` : "빈 값 없음";
-      item.append(name, kind, empty);
-      list.append(item);
-    });
-  });
-  section.append(list);
-
-  quality.mixedColumns.slice(0, 3).forEach((column) => {
-    const warning = document.createElement("p");
-    warning.className = "column-summary-warning";
-    warning.textContent = describeMixedColumn(column);
-    section.append(warning);
-  });
-  previewData.append(section);
 }
 
 function createAiSourcePayload(record) {
@@ -742,20 +688,7 @@ function createAiSourcePayload(record) {
       source_id: getSheetSourceId(sheetIndex, sheet, rowIndex),
       text: row.join(" | "),
     }))),
-    computed_facts: getComputedFacts(record),
   };
-}
-
-// 자동 그래프가 코드로 계산한 강조(최대 상승·하락, 최고·최저)를 AI에 그대로 넘겨, AI는 설명만 하게 합니다.
-function getComputedFacts(record) {
-  const spec = record.visualSpec || buildSpreadsheetVisualizationSpec(record);
-  return (spec.visuals || []).flatMap((visual) => (visual.highlights || []).map((highlight) => ({
-    visual: visual.title,
-    label: highlight.label,
-    reason: highlight.reason,
-    source_ids: highlight.source_ids,
-    derived: highlight.derived,
-  })));
 }
 
 function isPlainRecord(value) {
@@ -1059,23 +992,6 @@ function getCombinedVisualSpec(record) {
   };
 }
 
-const AI_FALLBACK_NOTE = " 그래프와 강조 구간은 AI 없이도 그대로 볼 수 있어요.";
-
-function getAiFailureMessage(result) {
-  switch (result?.code) {
-    case "AI_NOT_CONFIGURED":
-      return `AI 설명 기능이 아직 연결되지 않았어요(서버의 LLM_API_KEY·LLM_BASE_URL 설정 필요).${AI_FALLBACK_NOTE}`;
-    case "NO_ANALYZABLE_CONTENT":
-      return result.error || "설명할 데이터가 없어요. 제목 행 아래에 값이 있는지 확인해 주세요.";
-    case "AI_RESPONSE_INVALID":
-      return `AI가 근거와 맞는 설명을 만들지 못했어요. 잠시 후 다시 눌러 주세요.${AI_FALLBACK_NOTE}`;
-    case "AI_CALL_FAILED":
-      return `AI 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.${AI_FALLBACK_NOTE}`;
-    default:
-      return `${result?.error || "AI 호출 실패. 서버 연결을 확인한 뒤 다시 시도해 주세요."}${AI_FALLBACK_NOTE}`;
-  }
-}
-
 async function runAiSummary(record) {
   if (!record || aiLoadingDocuments.has(record.id)) return;
 
@@ -1099,7 +1015,10 @@ async function runAiSummary(record) {
     }
 
     if (!response.ok) {
-      throw new Error(getAiFailureMessage(result));
+      if (result.code === "AI_RESPONSE_INVALID") {
+        throw new Error(result.error || AI_RETRY_MESSAGE);
+      }
+      throw new Error(result.error || "AI 호출 실패. 서버 연결을 확인한 뒤 다시 시도해 주세요.");
     }
 
     const nextSummary = normalizeAiSummary(result, record);
@@ -1120,7 +1039,7 @@ async function runAiSummary(record) {
     const message = error.name === "AbortError" || error.name === "TimeoutError"
       ? "AI 요청 시간이 초과되었습니다. 다시 시도해 주세요."
       : error instanceof TypeError && /fetch|network/i.test(error.message)
-        ? `AI 호출 실패. 서버 연결과 LLM_BASE_URL을 확인한 뒤 다시 시도해 주세요.${AI_FALLBACK_NOTE}`
+        ? "AI 호출 실패. 서버 연결과 LLM_BASE_URL을 확인한 뒤 다시 시도해 주세요."
         : error.message || "AI 호출 실패. 다시 시도해 주세요.";
     aiErrors.set(record.id, message);
     if (selectedDocumentId === record.id) renderAiSummary(record);
@@ -1374,15 +1293,10 @@ async function init() {
     documents = await getStoredDocuments();
     for (const record of documents) {
       let needsSave = false;
-      if (record.type !== "pdf") {
-        // 자동 그래프 규칙이 바뀌어도 저장된 문서가 최신 규칙으로 다시 그려지도록 매번 새로 만듭니다.
-        const freshSpec = buildSpreadsheetVisualizationSpec(record);
-        if (JSON.stringify(freshSpec) !== JSON.stringify(record.visualSpec)) {
-          record.visualSpec = freshSpec;
-          needsSave = true;
-        }
-      } else if (!Object.hasOwn(record, "visualSpec")) {
-        record.visualSpec = { status: "ok", message: "AI 요약 연결 후 시각화가 표시됩니다", visuals: [] };
+      if (!Object.hasOwn(record, "visualSpec")) {
+        record.visualSpec = record.type === "pdf"
+          ? { status: "ok", message: "AI 요약 연결 후 시각화가 표시됩니다", visuals: [] }
+          : buildSpreadsheetVisualizationSpec(record);
         needsSave = true;
       }
 

@@ -142,7 +142,6 @@ function makeSystemPrompt({ contractText, dataContractText, sampleSpec }) {
     "CSV·Excel의 시계열 표에서는 summary 한 문장에 기간 간 방향(예: 1월보다 3월에 증가/감소)을 반드시 설명하세요. 월별 숫자만 나열하거나 '자료가 기록되어 있습니다' 같은 소개만 쓰지 마세요. source_ids에는 비교에 쓴 두 기간 이상을 넣고, 증감률을 직접 계산했다면 derived에 계산식과 원래 값을 남기세요.",
     "source_id는 입력된 source_id를 글자 하나도 바꾸지 말고 그대로 사용하세요. 새 위치 id를 만들지 마세요. 근거가 모자라면 status를 insufficient_data로 하고 visuals를 빈 배열로 반환하세요.",
     "시각화 유형은 자료에 맞춰 고릅니다: 업무 절차는 flowchart, 일정은 timeline, 항목 비교는 bar_chart 또는 comparison_table, 수치 변화는 line_chart, 핵심 수치는 kpi_cards입니다. line_chart의 시점은 시간순 오름차순으로 정렬하고 labels·values·source_ids를 함께 같은 순서로 옮기세요.",
-    "입력에 computed_facts가 있으면 그것은 코드가 원문에서 직접 계산한 핵심 구간(최대 상승·최대 하락)과 최고·최저 값입니다. 이 값과 계산 결과를 그대로 사용해 쉬운 말로 설명하고, 같은 내용을 다시 계산하거나 다른 숫자로 바꾸지 마세요. summary의 첫 문장은 가장 큰 변화 구간을 중학생도 이해할 수 있는 말로 설명하세요.",
     "숫자와 날짜는 원문에 표시된 그대로 사용하세요. 수치의 증감·비교를 highlight하면 derived에 계산식, original_values의 원래 값과 기간, result를 반드시 기록하세요. 증감률은 원문 수치만으로 계산하고 근거 없는 계산 값은 만들지 마세요.",
     "각 visual의 caption은 핵심 원문 수치를 담은 한 문장으로 쓰고, highlight의 reason도 왜 중요한지 설명하는 한 문장으로 씁니다. 원문에 변경사항이나 마감 일정이 있으면 해당 변화·일정 중 중요한 항목을 critical 또는 important로 강조하세요. 변경 구간은 chart의 point/구간 target, 마감은 timeline의 item_id target으로 연결합니다.",
     "근거가 있는 변화·마감·절차가 있을 때 highlights를 비워두지 마세요. 중요도가 높은 항목부터 visual당 최대 3개까지만 담으세요. 한 구간에는 핵심 visual을 최대 3개까지만 만들고, 값 배열을 중복해 불필요하게 길게 만들지 마세요. line_chart와 bar_chart의 labels, values, source_ids 배열은 같은 인덱스가 같은 원본 위치를 가리켜야 하며 빈 값은 null로 둡니다.",
@@ -330,29 +329,6 @@ function mergeChunkResults(chunkResults, failedCount) {
   };
 }
 
-const MAX_COMPUTED_FACTS = 12;
-
-// 브라우저 코드가 직접 계산한 핵심 구간·최고·최저 값입니다. 이 청크의 원문 위치만 가리키는 항목만 모델에 넘깁니다.
-export function getChunkComputedFacts(document) {
-  if (!Array.isArray(document.computed_facts)) return [];
-  const chunkSourceIds = new Set(document.sources.map((source) => source.source_id));
-  return document.computed_facts
-    .filter((fact) => isRecord(fact)
-      && isText(fact.label)
-      && isText(fact.reason)
-      && Array.isArray(fact.source_ids)
-      && fact.source_ids.length > 0
-      && fact.source_ids.every((sourceId) => chunkSourceIds.has(sourceId)))
-    .slice(0, MAX_COMPUTED_FACTS)
-    .map((fact) => ({
-      visual: isText(fact.visual) ? fact.visual.slice(0, 120) : "",
-      label: fact.label.slice(0, 120),
-      reason: fact.reason.slice(0, 300),
-      source_ids: fact.source_ids,
-      ...(isRecord(fact.derived) ? { derived: fact.derived } : {}),
-    }));
-}
-
 async function requestSingleChunk(document, {
   apiKey,
   endpoint,
@@ -371,7 +347,6 @@ async function requestSingleChunk(document, {
       content: JSON.stringify({
         document: { name: document.name, type: document.type },
         sources: document.sources,
-        ...(getChunkComputedFacts(document).length > 0 ? { computed_facts: getChunkComputedFacts(document) } : {}),
       }),
     },
   ];
