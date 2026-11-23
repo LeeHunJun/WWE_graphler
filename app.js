@@ -50,6 +50,10 @@ const aiSummaryRetryButton = document.querySelector("#ai-summary-retry");
 const loadSampleSpecButton = document.querySelector("#load-sample-spec");
 const developerTools = document.querySelector("#developer-tools");
 const toast = document.querySelector("#toast");
+const deleteDocumentDialog = document.querySelector("#delete-document-dialog");
+const deleteDocumentFileName = document.querySelector("#delete-document-file-name");
+const cancelDeleteDocumentButton = document.querySelector("#cancel-delete-document");
+const confirmDeleteDocumentButton = document.querySelector("#confirm-delete-document");
 
 let activeFilter = "all";
 let documents = [];
@@ -58,10 +62,13 @@ let databasePromise;
 let isLoadingDocuments = true;
 let isUploading = false;
 let isLoadingSample = false;
+let pendingDeleteDocumentId = null;
+let isDeletingDocument = false;
 let toastTimer;
 const searchCache = new Map();
 const aiLoadingDocuments = new Set();
 const aiErrors = new Map();
+const deletingDocuments = new Set();
 
 class FileProcessingError extends Error {
   constructor(reason) {
@@ -119,12 +126,24 @@ async function getStoredDocuments() {
 
 async function saveDocument(record) {
   const database = await openDatabase();
+  if (deletingDocuments.has(record.id)) throw new Error("문서 삭제 중에는 저장할 수 없습니다.");
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readwrite");
     transaction.objectStore(STORE_NAME).put(record);
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error || new Error("브라우저 저장 공간에 문서를 보관하지 못했습니다."));
     transaction.onabort = () => reject(transaction.error || new Error("브라우저 저장 공간에 문서를 보관하지 못했습니다."));
+  });
+}
+
+async function deleteStoredDocument(id) {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error("문서를 삭제하지 못했습니다."));
+    transaction.onabort = () => reject(transaction.error || new Error("문서를 삭제하지 못했습니다."));
   });
 }
 
@@ -420,12 +439,16 @@ function getDocumentSummary(record) {
 
 function createDocumentRow(record) {
   const typeInfo = FILE_TYPES[record.type];
-  const row = document.createElement("button");
-  row.type = "button";
+  const row = document.createElement("div");
   row.className = "document-row";
   row.classList.toggle("is-selected", record.id === selectedDocumentId);
   row.dataset.documentId = record.id;
-  row.setAttribute("aria-pressed", String(record.id === selectedDocumentId));
+
+  const selectButton = document.createElement("button");
+  selectButton.type = "button";
+  selectButton.className = "document-row-select";
+  selectButton.classList.toggle("is-selected", record.id === selectedDocumentId);
+  selectButton.setAttribute("aria-pressed", String(record.id === selectedDocumentId));
 
   const fileIcon = document.createElement("span");
   fileIcon.className = `file-icon file-icon-${typeInfo.className}`;
@@ -467,17 +490,32 @@ function createDocumentRow(record) {
   arrowPath.setAttribute("d", "m6 3 5 5-5 5");
   arrow.append(arrowPath);
 
-  row.append(fileIcon, info, dateLabel, arrow);
-  row.addEventListener("click", () => selectDocument(record.id));
+  selectButton.append(fileIcon, info, dateLabel, arrow);
+  selectButton.addEventListener("click", () => selectDocument(record.id));
+
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "document-delete-button";
+  deleteButton.setAttribute("aria-label", `${record.name} 삭제`);
+  deleteButton.title = "문서 삭제";
+  deleteButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2m3 0-.7 10H5.7L5 6m3 3v4m4-4v4" /></svg>';
+  deleteButton.addEventListener("click", () => openDeleteDocumentDialog(record));
+
+  row.append(selectButton, deleteButton);
   return row;
 }
 
-function renderDocuments() {
+function getFilteredDocuments() {
   const query = searchInput.value.trim().toLocaleLowerCase("ko");
-  const filteredDocuments = documents.filter((record) => {
+  return documents.filter((record) => {
     const matchesType = activeFilter === "all" || record.type === activeFilter;
     return matchesType && (!query || getDocumentSearchText(record).includes(query));
   });
+}
+
+function renderDocuments() {
+  const query = searchInput.value.trim();
+  const filteredDocuments = getFilteredDocuments();
 
   documentList.replaceChildren(...filteredDocuments.map(createDocumentRow));
   documentCount.textContent = String(filteredDocuments.length);
@@ -1021,6 +1059,8 @@ async function runAiSummary(record) {
       throw new Error(result.error || "AI 호출 실패. 서버 연결을 확인한 뒤 다시 시도해 주세요.");
     }
 
+    if (deletingDocuments.has(record.id) || !documents.some((item) => item.id === record.id)) return;
+
     const nextSummary = normalizeAiSummary(result, record);
     const previousSummary = record.aiSummary;
     record.aiSummary = nextSummary;
@@ -1041,11 +1081,13 @@ async function runAiSummary(record) {
       : error instanceof TypeError && /fetch|network/i.test(error.message)
         ? "AI 호출 실패. 서버 연결과 LLM_BASE_URL을 확인한 뒤 다시 시도해 주세요."
         : error.message || "AI 호출 실패. 다시 시도해 주세요.";
-    aiErrors.set(record.id, message);
-    if (selectedDocumentId === record.id) renderAiSummary(record);
+    if (!deletingDocuments.has(record.id) && documents.some((item) => item.id === record.id)) {
+      aiErrors.set(record.id, message);
+      if (selectedDocumentId === record.id) renderAiSummary(record);
+    }
   } finally {
     aiLoadingDocuments.delete(record.id);
-    if (selectedDocumentId === record.id) renderAiSummary(record);
+    if (selectedDocumentId === record.id && documents.some((item) => item.id === record.id)) renderAiSummary(record);
   }
 }
 
@@ -1087,6 +1129,46 @@ function selectDocument(id, sourceId = null) {
   renderDocuments();
   renderPreview(record, sourceId);
   if (selectionChanged) renderSelectedVisuals(record);
+}
+
+function openDeleteDocumentDialog(record) {
+  if (!record || isDeletingDocument || deleteDocumentDialog.open) return;
+  pendingDeleteDocumentId = record.id;
+  deleteDocumentFileName.textContent = record.name;
+  deleteDocumentDialog.showModal();
+}
+
+async function deleteDocument(id) {
+  const record = documents.find((item) => item.id === id);
+  if (!record) return;
+
+  deletingDocuments.add(id);
+  try {
+    await deleteStoredDocument(id);
+  } catch (error) {
+    deletingDocuments.delete(id);
+    throw error;
+  }
+
+  documents = documents.filter((item) => item.id !== id);
+  searchCache.delete(id);
+  aiErrors.delete(id);
+  deletingDocuments.delete(id);
+
+  const wasSelected = selectedDocumentId === id;
+  if (wasSelected) selectedDocumentId = null;
+  renderDocuments();
+
+  if (wasSelected) {
+    const nextVisibleDocument = getFilteredDocuments()[0];
+    if (nextVisibleDocument) selectDocument(nextVisibleDocument.id);
+    else {
+      renderPreview(null);
+      renderSelectedVisuals(null);
+    }
+  }
+
+  showToast(`“${record.name}” 문서를 삭제했어요.`);
 }
 
 function setUploading(value) {
@@ -1248,6 +1330,35 @@ document.querySelector("#view-all").addEventListener("click", () => {
   searchInput.value = "";
   syncFilters();
   renderDocuments();
+});
+
+cancelDeleteDocumentButton.addEventListener("click", () => {
+  if (isDeletingDocument) return;
+  deleteDocumentDialog.close();
+});
+deleteDocumentDialog.addEventListener("cancel", (event) => {
+  if (isDeletingDocument) event.preventDefault();
+});
+deleteDocumentDialog.addEventListener("close", () => {
+  pendingDeleteDocumentId = null;
+});
+confirmDeleteDocumentButton.addEventListener("click", async () => {
+  const id = pendingDeleteDocumentId;
+  if (!id || isDeletingDocument) return;
+
+  isDeletingDocument = true;
+  cancelDeleteDocumentButton.disabled = true;
+  confirmDeleteDocumentButton.disabled = true;
+  try {
+    await deleteDocument(id);
+    deleteDocumentDialog.close();
+  } catch {
+    showToast("문서를 삭제하지 못했어요. 잠시 후 다시 시도해 주세요.");
+  } finally {
+    isDeletingDocument = false;
+    cancelDeleteDocumentButton.disabled = false;
+    confirmDeleteDocumentButton.disabled = false;
+  }
 });
 
 loadSampleSpecButton.addEventListener("click", loadSampleVisualization);

@@ -325,6 +325,22 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <dialog class="delete-document-dialog" id="delete-document-dialog" aria-labelledby="delete-document-title" aria-describedby="delete-document-description">
+      <div class="delete-dialog-content">
+        <span class="delete-dialog-icon" aria-hidden="true">
+          <svg viewBox="0 0 20 20"><path d="M4 6h12M8 6V4h4v2m3 0-.7 10H5.7L5 6m3 3v4m4-4v4" /></svg>
+        </span>
+        <div class="delete-dialog-copy">
+          <p class="mini-eyebrow">DELETE DOCUMENT</p>
+          <h2 id="delete-document-title">문서를 삭제할까요?</h2>
+          <p id="delete-document-description"><span id="delete-document-file-name"></span> 문서와 저장된 요약이 이 브라우저에서 삭제됩니다. 삭제 후에는 되돌릴 수 없어요.</p>
+        </div>
+        <div class="delete-dialog-actions">
+          <button class="delete-cancel-button" id="cancel-delete-document" type="button">취소</button>
+          <button class="delete-confirm-button" id="confirm-delete-document" type="button">삭제</button>
+        </div>
+      </div>
+    </dialog>
     <script type="module" src="app.js"></script>
   </body>
 </html>

@@ -1062,27 +1062,61 @@ svg {
   display: grid;
   min-width: 0;
   min-height: 65px;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 5px;
+  border-top: 1px solid #edf0ed;
+}
+
+.document-row-select {
+  display: grid;
+  min-width: 0;
+  min-height: 63px;
   grid-template-columns: 35px minmax(0, 1fr) auto 14px;
   align-items: center;
   gap: 10px;
   padding: 8px 2px;
   border: 0;
-  border-top: 1px solid #edf0ed;
   background: #fff;
   text-align: left;
   transition: background 150ms ease;
 }
 
-.document-row:hover {
+.document-row-select:hover {
   background: #f9fbf8;
 }
 
-.document-row.is-selected {
+.document-row.is-selected .document-row-select {
   background: #f2f7f0;
 }
 
 .document-row[hidden] {
   display: none;
+}
+
+.document-delete-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #9b8b86;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+
+.document-delete-button:hover {
+  border-color: #f2d9d4;
+  background: #fbefeb;
+  color: #b85245;
+}
+
+.document-delete-button svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.7;
 }
 
 .file-icon {
@@ -1224,6 +1258,114 @@ svg {
   height: 14px;
   color: #a6afa8;
   stroke-width: 1.5;
+}
+
+.delete-document-dialog {
+  width: min(430px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid #e5eae5;
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 24px 80px rgb(24 39 30 / 22%);
+}
+
+.delete-document-dialog::backdrop {
+  background: rgb(24 39 30 / 42%);
+  backdrop-filter: blur(2px);
+}
+
+.delete-dialog-content {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 14px;
+  padding: 24px;
+}
+
+.delete-dialog-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 10px;
+  background: #fbefeb;
+  color: #b85245;
+}
+
+.delete-dialog-icon svg {
+  width: 21px;
+  height: 21px;
+  stroke-width: 1.6;
+}
+
+.delete-dialog-copy .mini-eyebrow {
+  margin: 0 0 3px;
+  color: #ad766d;
+  font-size: 8px;
+  letter-spacing: 1px;
+}
+
+.delete-dialog-copy h2 {
+  margin: 0;
+  color: #27362d;
+  font-size: 16px;
+  font-weight: 680;
+  letter-spacing: -0.3px;
+}
+
+.delete-dialog-copy > p:last-child {
+  margin: 8px 0 0;
+  color: #748078;
+  font-size: 11px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.delete-dialog-copy > p:last-child span {
+  color: #34443b;
+  font-weight: 650;
+}
+
+.delete-dialog-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.delete-dialog-actions button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid #e2e8e2;
+  border-radius: 6px;
+  background: #fff;
+  color: #65736a;
+  font-size: 10px;
+  font-weight: 650;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.delete-dialog-actions .delete-cancel-button:hover {
+  border-color: #cfd9d0;
+  background: #f7f9f6;
+  color: #34443b;
+}
+
+.delete-dialog-actions .delete-confirm-button {
+  border-color: #b85245;
+  background: #b85245;
+  color: #fff;
+}
+
+.delete-dialog-actions .delete-confirm-button:hover {
+  border-color: #a64237;
+  background: #a64237;
+}
+
+.delete-dialog-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .empty-state {
@@ -2890,6 +3032,12 @@ svg {
 
   .document-row {
     min-height: 63px;
+    grid-template-columns: minmax(0, 1fr) 30px;
+    gap: 3px;
+  }
+
+  .document-row-select {
+    min-height: 61px;
     grid-template-columns: 33px minmax(0, 1fr) 12px;
     gap: 8px;
     padding: 7px 0;
@@ -2897,6 +3045,11 @@ svg {
 
   .document-date {
     display: none;
+  }
+
+  .document-delete-button {
+    width: 30px;
+    height: 30px;
   }
 
   .file-icon {
