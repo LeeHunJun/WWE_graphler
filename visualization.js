@@ -1,5 +1,6 @@
 import Chart from "chart.js/auto";
 import { parseNumber, parseTemporal } from "./value-parsing.js";
+import { INSIGHT_LEVEL_LABELS } from "./insight-priority.js";
 
 export { parseTemporal };
 
@@ -12,7 +13,6 @@ const VISUAL_TYPES = new Set([
   "kpi_cards",
 ]);
 const HIGHLIGHT_LEVELS = new Set(["critical", "important", "info"]);
-const LEVEL_LABELS = { critical: "긴급", important: "중요", info: "참고" };
 const LEVEL_COLORS = { critical: "#c75850", important: "#db923f", info: "#89928b" };
 const CHART_COLORS = ["#5f8d66", "#5d7dbb", "#cb8b48", "#8b78ae"];
 const chartInstances = new WeakMap();
@@ -1017,7 +1017,7 @@ function renderHighlights(card, visual, highlights, sourceLookup, onNavigate) {
     const button = createElement("button", "visual-highlight-button");
     button.type = "button";
     button.dataset.highlightLabel = highlight.label;
-    const level = createElement("span", `highlight-level highlight-level-${highlight.level}`, LEVEL_LABELS[highlight.level]);
+    const level = createElement("span", `highlight-level highlight-level-${highlight.level}`, INSIGHT_LEVEL_LABELS[highlight.level]);
     const label = createElement("span", "visual-highlight-label", highlight.label);
     const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     arrow.setAttribute("viewBox", "0 0 16 16");

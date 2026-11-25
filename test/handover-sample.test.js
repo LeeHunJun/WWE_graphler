@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import * as XLSX from "xlsx";
 import { analyzeDrivers, buildDriverVisualSpec } from "../driver-analysis.js";
+import { sortInsightsByPriority } from "../insight-priority.js";
 import { buildSpreadsheetVisualizationSpec, validateHighlight, validateVisual } from "../visualization.js";
 
 // 앱(app.js)과 같은 방식으로 셀 표시값을 문자열로 읽습니다.
@@ -91,6 +92,7 @@ test("인수인계 요약: 시트 역할을 나누고 다섯 항목을 모두 �
 
   const lookup = new Set(record.sheets.flatMap((sheet, index) => sheet.rows.map((_, rowIndex) => `sheet:${index}:row:${rowIndex + 1}`)));
   for (const section of result.sections) {
+    assert.deepEqual(section.insights, sortInsightsByPriority(section.insights), `${section.key} 항목 우선순위`);
     for (const insight of section.insights) {
       assert.ok(insight.sentence && insight.method && insight.sourceIds.length > 0, insight.id);
       assert.ok(insight.sourceIds.every((sourceId) => lookup.has(sourceId)), `${insight.id} 근거 행`);

@@ -1,8 +1,8 @@
 // "왜?" 원인 분석 패널 화면. 계산은 driver-analysis.js가 하고, 이 파일은 그리기만 합니다.
 import { analyzeDrivers, buildDriverVisualSpec, formatValue, suggestTargets } from "./driver-analysis.js";
 import { getSourceLookup, renderVisuals } from "./visualization.js";
+import { INSIGHT_LEVEL_LABELS, sortInsightsByPriority } from "./insight-priority.js";
 
-const LEVEL_LABELS = { critical: "핵심", important: "중요", info: "참고" };
 const panel = document.querySelector("#driver-panel");
 const sheetField = document.querySelector("#driver-sheet-field");
 const sheetSelect = document.querySelector("#driver-sheet");
@@ -46,7 +46,7 @@ export function renderInsight(insight, lookup, onNavigate) {
   const card = createElement("article", `driver-insight driver-insight-${insight.level}`);
   const head = createElement("div", "driver-insight-head");
   head.append(
-    createElement("span", `highlight-level highlight-level-${insight.level}`, LEVEL_LABELS[insight.level] || "참고"),
+    createElement("span", `highlight-level highlight-level-${insight.level}`, INSIGHT_LEVEL_LABELS[insight.level] || "참고"),
     createElement("h3", "", insight.title),
   );
   card.append(head, createElement("p", "driver-insight-sentence", insight.sentence));
@@ -127,7 +127,7 @@ function run() {
 
   const lookup = getSourceLookup(record);
   const list = createElement("div", "driver-insights");
-  result.insights.forEach((insight) => list.append(renderInsight(insight, lookup, onNavigate)));
+  sortInsightsByPriority(result.insights).forEach((insight) => list.append(renderInsight(insight, lookup, onNavigate)));
   if (result.insights.length === 0) {
     list.append(createElement("p", "visual-output-message", "뚜렷한 차이를 보이는 요인을 찾지 못했어요. 다른 목표 지표를 골라 보세요."));
   }

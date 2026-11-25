@@ -10,6 +10,7 @@ import {
   pearson,
   profileColumns,
 } from "../driver-analysis.js";
+import { sortInsightsByPriority } from "../insight-priority.js";
 import { validateHighlight, validateVisual } from "../visualization.js";
 
 function loadCsvFixture(name) {
@@ -97,6 +98,7 @@ test("월별 매출 하락을 방문수와 상품별 매출로 분해하고 함�
     result.period.categoricalChanges.map((item) => [item.name, item.from, item.to]),
     [["주변공사", "없음", "있음"]],
   );
+  assert.deepEqual(result.insights, sortInsightsByPriority(result.insights), "원인 분석 인사이트가 우선순위 순서입니다");
   const downstream = result.period.comovers.filter((item) => item.downstream).map((item) => item.name).sort();
   assert.deepEqual(downstream, ["영업이익(원)", "원가(원)"]);
 });

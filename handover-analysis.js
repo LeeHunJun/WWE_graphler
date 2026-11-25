@@ -3,6 +3,7 @@
 // AI를 쓰지 않고 원본 행에서 직접 계산하며, 모든 문장에 근거 값·계산법·행 번호를 붙입니다.
 import { analyzeDrivers, formatValue, josa, profileColumns, suggestTargets } from "./driver-analysis.js";
 import { parseNumber } from "./value-parsing.js";
+import { sortInsightsByPriority } from "./insight-priority.js";
 
 export const HANDOVER_SECTIONS = [
   { key: "status", title: "지금 상태", empty: "월별·주별처럼 기간마다 한 행씩 쌓인 시트가 있으면 최근 상태를 보여드려요." },
@@ -452,7 +453,7 @@ export function analyzeHandover(record) {
   const sections = HANDOVER_SECTIONS.map((section) => {
     const { role, run } = ANALYZERS[section.key];
     const sources = infos.filter((info) => info.role === role);
-    const insights = sources.flatMap((info) => run(info).map((insight) => ({ ...insight, sheetName: info.sheet.name })));
+    const insights = sortInsightsByPriority(sources.flatMap((info) => run(info).map((insight) => ({ ...insight, sheetName: info.sheet.name }))));
     return { ...section, sheetNames: sources.map((info) => info.sheet.name), insights };
   });
   const found = sections.filter((section) => section.insights.length > 0).length;

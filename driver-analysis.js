@@ -3,6 +3,7 @@
 // 결과는 "인과 확정"이 아니라 "데이터에서 확인된 차이·상관을 근거로 한 추정"입니다.
 
 import { parseNumber, parseTemporal } from "./value-parsing.js";
+import { sortInsightsByPriority } from "./insight-priority.js";
 
 const MAX_CATEGORY_COUNT = 12;
 const MIN_GROUP_SIZE = 5;
@@ -977,10 +978,10 @@ function buildInsights({ target, factors, combination, period }) {
 
   const priority = (id) => ["period-change", "decomposition", "category-change", "comover", "factor", "combination", "weak"]
     .findIndex((prefix) => id.startsWith(prefix));
-  return insights
+  return sortInsightsByPriority(insights
     .map((insight, index) => ({ insight, index }))
     .sort((first, second) => priority(first.insight.id) - priority(second.insight.id) || first.index - second.index)
-    .map(({ insight }) => insight);
+    .map(({ insight }) => insight));
 }
 
 // ---------------------------------------------------------------------------
