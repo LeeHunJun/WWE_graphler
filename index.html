@@ -263,10 +263,6 @@
               </div>
               <p class="local-storage-note" id="preview-footnote">업로드한 파일과 텍스트는 이 브라우저에 저장됩니다.</p>
             </aside>
-            </div>
-          </div>
-
-          <div class="analysis-wide" id="analysis">
             <section class="insight-panel visualizations-panel" aria-labelledby="visualizations-title">
               <div class="visualizations-heading">
                 <div>
@@ -290,9 +286,6 @@
                   <a href="/test-fixtures/no-numbers.csv" download>숫자 없는 CSV</a>
                   <a href="/test-fixtures/sparse-values.csv" download>빈칸 포함 CSV</a>
                   <a href="/test-fixtures/sample-visual-spec.json" download>샘플 명세 JSON</a>
-                  <a href="/test-fixtures/titanic-style-survival.csv" download>원인 분석: 생존 CSV</a>
-                  <a href="/test-fixtures/monthly-sales-drivers.csv" download>원인 분석: 월 매출 CSV</a>
-                  <a href="/test-fixtures/handover-sample.xlsx" download>인수인계 샘플 Excel (가상)</a>
                 </div>
               </details>
               <section class="ai-summary-card" id="ai-summary-card" aria-label="AI 문서 요약" hidden>
@@ -317,44 +310,7 @@
               </div>
               <div class="visualization-output" id="visualization-output" aria-live="polite"></div>
             </section>
-            <section class="insight-panel driver-panel handover-panel" id="handover-panel" aria-labelledby="handover-title" hidden>
-              <div class="visualizations-heading">
-                <div>
-                  <p class="mini-eyebrow">HANDOVER</p>
-                  <h2 id="handover-title">인수인계 요약 · 이 업무를 넘겨받는다면</h2>
-                </div>
-                <span class="driver-badge" title="원본 행에서 코드로 계산했으며, 요인 분석은 인과관계를 확정하지 않아요.">원본 행 기반</span>
-              </div>
-              <p class="driver-intro">파일의 모든 시트를 함께 읽어 지금 상태, 바쁜 시기, 조심할 대상, 반복되는 문제, 놓치면 안 되는 정기 업무를 한 번에 정리해요. 문장마다 계산 근거와 원본 행을 확인할 수 있어요.</p>
-              <p class="driver-summary-line" id="handover-summary"></p>
-              <div class="driver-output handover-output" id="handover-output" aria-live="polite"></div>
-            </section>
-            <section class="insight-panel driver-panel" id="driver-panel" aria-labelledby="driver-title" hidden>
-              <div class="visualizations-heading">
-                <div>
-                  <p class="mini-eyebrow">WHY ANALYSIS</p>
-                  <h2 id="driver-title">원인 분석 · 왜 이런 결과가 나왔을까?</h2>
-                </div>
-                <span class="driver-badge" title="데이터의 차이·상관을 근거로 한 추정이며, 인과관계를 확정하지 않아요.">근거 기반 추정</span>
-              </div>
-              <p class="driver-intro">결과로 볼 지표를 고르면 어떤 조건에서 그 값이 달라졌는지, 값이 떨어진 기간에 무엇이 함께 바뀌었는지 원본 행에서 직접 계산해 보여드려요.</p>
-              <div class="driver-controls">
-                <label class="driver-field" id="driver-sheet-field" hidden>
-                  <span>시트</span>
-                  <select id="driver-sheet"></select>
-                </label>
-                <label class="driver-field">
-                  <span>목표 지표</span>
-                  <select id="driver-target"></select>
-                </label>
-                <label class="driver-field" id="driver-period-field" hidden>
-                  <span>살펴볼 기간</span>
-                  <select id="driver-period"></select>
-                </label>
-              </div>
-              <div class="driver-output" id="driver-output" aria-live="polite"></div>
-              <div class="visualization-output driver-visual-output" id="driver-visual-output"></div>
-            </section>
+            </div>
           </div>
 
           <footer class="page-footer">
