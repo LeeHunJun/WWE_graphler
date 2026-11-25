@@ -1,2 +1,6 @@
 .opencode/ai-response-diagnostics*
 .playwright-mcp/
+
+.env
+.env.*
+node_modules/
