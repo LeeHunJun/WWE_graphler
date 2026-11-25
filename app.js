@@ -2,6 +2,7 @@ import { buildSpreadsheetVisualizationSpec, getHighlightIdentity, getSourceLooku
 import { hasOnlySupportedNumbers, hasSupportedNumericValue, isSupportedByEvidence } from "./source-evidence.js";
 import { validateAiQuality } from "./ai-quality.js";
 import { renderDriverPanel } from "./driver-view.js";
+import { renderHandoverPanel } from "./handover-view.js";
 
 const DATABASE_NAME = "grappler-local-documents";
 const DATABASE_VERSION = 1;
@@ -1102,6 +1103,7 @@ function renderSelectedVisuals(record) {
     renderVisuals(fallbackSpec, { container: visualizationOutput });
     renderAiSummary(null);
     renderDriverPanel(null);
+    renderHandoverPanel(null);
     return;
   }
 
@@ -1121,6 +1123,7 @@ function renderSelectedVisuals(record) {
     sourceDocument: record,
     onNavigate: (sourceId) => selectDocument(record.id, sourceId),
   });
+  renderHandoverPanel(record, { onNavigate: (sourceId) => selectDocument(record.id, sourceId) });
   renderDriverPanel(record, { onNavigate: (sourceId) => selectDocument(record.id, sourceId) });
 }
 

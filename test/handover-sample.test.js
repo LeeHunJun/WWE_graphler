@@ -80,3 +80,62 @@ test("인수인계 샘플: 이슈 재발은 정산오류 유형에서 가장 잦
   assert.ok(Math.abs(groups[0].value - rate) < 1e-12);
   assertValidSpec(buildDriverVisualSpec(result, record));
 });
+
+test("인수인계 요약: 시트 역할을 나누고 다섯 항목을 모두 채웁니다", async () => {
+  const { analyzeHandover } = await import("../handover-analysis.js");
+  const result = analyzeHandover(record);
+  assert.equal(result.status, "ok");
+  assert.deepEqual(result.roles.map((role) => role.role), ["period", "watch", "problem", "routine"]);
+  const sections = Object.fromEntries(result.sections.map((section) => [section.key, section]));
+  for (const key of ["status", "busy", "watch", "problem", "routine"]) assert.ok(sections[key].insights.length > 0, key);
+
+  const lookup = new Set(record.sheets.flatMap((sheet, index) => sheet.rows.map((_, rowIndex) => `sheet:${index}:row:${rowIndex + 1}`)));
+  for (const section of result.sections) {
+    for (const insight of section.insights) {
+      assert.ok(insight.sentence && insight.method && insight.sourceIds.length > 0, insight.id);
+      assert.ok(insight.sourceIds.every((sourceId) => lookup.has(sourceId)), `${insight.id} 근거 행`);
+    }
+  }
+
+  // 지금 상태: 최근 달 값이 원본과 같고, 신ERP 전환·휴직이 사건으로 잡힙니다.
+  const months = record.sheets[0].rows.slice(1);
+  const latest = sections.status.insights.find((insight) => insight.id === "status-latest");
+  assert.ok(latest.title.includes(months.at(-1)[0]));
+  const events = sections.status.insights.filter((insight) => insight.id.startsWith("status-event")).map((insight) => insight.title);
+  assert.ok(events.some((title) => title.includes("2025-07") && title.includes("신ERP")));
+  assert.ok(events.some((title) => title.includes("2026-02") && title.includes("휴직")));
+  assert.ok(!events.some((title) => title.includes("월구분")), "매달 바뀌는 열은 사건이 아닙니다");
+
+  // 바쁜 시기: 분기말 접수 평균을 원본에서 다시 계산해 맞춥니다.
+  const quarterEnd = months.filter((row) => row[10] === "분기말").map((row) => Number(row[4]));
+  const average = quarterEnd.reduce((sum, value) => sum + value, 0) / quarterEnd.length;
+  const busy = sections.busy.insights.find((insight) => insight.id.startsWith("busy-category"));
+  assert.ok(busy.title.includes("분기말"));
+  assert.ok(busy.evidence.some((item) => item.label.startsWith("분기말") && item.value === `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 1 }).format(average)}건`));
+
+  // 조심할 대상: 목록은 모두 이탈위험=높음인 행입니다.
+  const watch = sections.watch.insights.find((insight) => insight.id === "watch-list");
+  const clients = record.sheets[1].rows;
+  for (const sourceId of watch.sourceIds) {
+    const rowNumber = Number(sourceId.split(":").at(-1));
+    assert.equal(clients[rowNumber - 1][9], "높음");
+  }
+
+  // 반복되는 문제: 재발 이슈 중 정산오류 건수가 원본과 같습니다.
+  const issues = record.sheets[2].rows.slice(1).filter((row) => row[6] === "예");
+  const share = sections.problem.insights.find((insight) => insight.id === "problem-share");
+  assert.ok(share.title.includes("정산오류"));
+  assert.ok(share.sentence.includes(`${issues.length}건 중 ${issues.filter((row) => row[3] === "정산오류").length}건`));
+
+  // 정기 업무: 중요도 상만 고릅니다.
+  const routine = sections.routine.insights[0];
+  const highCount = record.sheets[3].rows.slice(1).filter((row) => row[4] === "상").length;
+  assert.equal(routine.sourceIds.length, Math.min(6, highCount));
+});
+
+test("인수인계 요약: 관련 없는 데이터(생존 기록)에서는 패널을 띄우지 않습니다", async () => {
+  const { analyzeHandover } = await import("../handover-analysis.js");
+  const rows = readFileSync(new URL("../public/test-fixtures/titanic-style-survival.csv", import.meta.url), "utf8").replace(/^﻿/, "").trim().split("\n").map((line) => line.split(","));
+  const result = analyzeHandover({ type: "csv", sheets: [{ name: "titanic", rows, rowNumbers: rows.map((_, index) => index + 1), rowCount: rows.length, columnCount: rows[0].length }] });
+  assert.equal(result.status, "insufficient_data");
+});

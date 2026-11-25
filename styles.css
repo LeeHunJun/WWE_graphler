@@ -3285,6 +3285,74 @@ svg {
   line-height: 1.55;
 }
 
+/* 인수인계 요약 */
+.handover-output {
+  gap: 14px;
+}
+
+.handover-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.handover-nav a {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid #dfe6de;
+  border-radius: 999px;
+  background: var(--green-tint);
+  color: var(--forest-soft);
+  font-size: 9px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.handover-nav a.is-empty {
+  background: #fff;
+  color: var(--muted);
+}
+
+.handover-section {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  scroll-margin-top: 16px;
+}
+
+.handover-section-head {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.handover-section-head h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.handover-sheet {
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 600;
+}
+
+.handover-empty {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px dashed #dfe6de;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
 .driver-visual-output:empty {
   display: none;
 }

@@ -42,7 +42,7 @@ function pickDefaultSheet(record) {
   return index >= 0 ? index : 0;
 }
 
-function renderInsight(insight, lookup, onNavigate) {
+export function renderInsight(insight, lookup, onNavigate) {
   const card = createElement("article", `driver-insight driver-insight-${insight.level}`);
   const head = createElement("div", "driver-insight-head");
   head.append(
