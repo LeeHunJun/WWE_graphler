@@ -3094,6 +3094,284 @@ svg {
   }
 }
 
+/* 원인 분석(왜?) 패널 */
+.driver-panel {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  padding: 18px 16px 15px;
+}
+
+.driver-panel[hidden],
+.driver-field[hidden] {
+  display: none;
+}
+
+.driver-badge {
+  display: inline-flex;
+  min-height: 22px;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid #dfe8f6;
+  border-radius: 999px;
+  background: var(--blue-pale);
+  color: #3f5f9f;
+  font-size: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.driver-intro {
+  margin: 0;
+  color: #6f7c73;
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.driver-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.driver-field {
+  display: grid;
+  min-width: 150px;
+  flex: 1 1 150px;
+  gap: 4px;
+  color: #5d6b61;
+  font-size: 8px;
+  font-weight: 650;
+}
+
+.driver-field select {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid #dfe6de;
+  border-radius: 5px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 9px;
+  font-weight: 560;
+}
+
+.driver-field select:focus-visible {
+  outline: 2px solid var(--forest-soft);
+  outline-offset: 1px;
+}
+
+.driver-output {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+
+.driver-summary-line {
+  margin: 0;
+  color: #6f7c73;
+  font-size: 8px;
+  font-weight: 620;
+}
+
+.driver-insights {
+  display: grid;
+  gap: 8px;
+}
+
+.driver-insight {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid #e7ece7;
+  border-left: 3px solid #c9d1ca;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.driver-insight-critical {
+  border-left-color: #c75850;
+}
+
+.driver-insight-important {
+  border-left-color: #db923f;
+}
+
+.driver-insight-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.driver-insight h3 {
+  min-width: 0;
+  margin: 0;
+  color: #2f3d34;
+  font-size: 10.5px;
+  font-weight: 680;
+  letter-spacing: -0.1px;
+}
+
+.driver-insight-sentence {
+  margin: 0;
+  color: #435248;
+  font-size: 9.5px;
+  line-height: 1.65;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.driver-evidence {
+  display: grid;
+  gap: 5px;
+  color: #5f6d63;
+  font-size: 8.5px;
+}
+
+.driver-evidence summary {
+  width: fit-content;
+  cursor: pointer;
+  color: #4f7656;
+  font-weight: 650;
+}
+
+.driver-evidence[open] {
+  padding-top: 2px;
+}
+
+.driver-evidence-values {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  margin: 4px 0 0;
+  padding: 8px 9px;
+  border-radius: 5px;
+  background: #f6f9f4;
+}
+
+.driver-evidence-values dt {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.driver-evidence-values dd {
+  margin: 0;
+  color: #2f3d34;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  text-align: right;
+}
+
+.driver-evidence-method,
+.driver-evidence-rows {
+  margin: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.driver-caveats {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 9px 11px 9px 24px;
+  border: 1px solid #ece6d6;
+  border-radius: 6px;
+  background: #fbf8ef;
+  color: #7a6a43;
+  font-size: 8.5px;
+  line-height: 1.55;
+}
+
+/* 인수인계 요약 */
+.handover-output {
+  gap: 14px;
+}
+
+.handover-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.handover-nav a {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid #dfe6de;
+  border-radius: 999px;
+  background: var(--green-tint);
+  color: var(--forest-soft);
+  font-size: 9px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.handover-nav a.is-empty {
+  background: #fff;
+  color: var(--muted);
+}
+
+.handover-section {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  scroll-margin-top: 16px;
+}
+
+.handover-section-head {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.handover-section-head h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.handover-sheet {
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 600;
+}
+
+.handover-empty {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px dashed #dfe6de;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.driver-visual-output:empty {
+  display: none;
+}
+
+@media (max-width: 560px) {
+  .driver-panel .visualizations-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .driver-evidence-values {
+    grid-template-columns: 1fr;
+  }
+
+  .driver-evidence-values dd {
+    text-align: left;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -3102,5 +3380,37 @@ svg {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* 넓은 분석 영역: 시각화·인수인계 요약·원인 분석을 문서 목록과 미리보기 아래에 화면 너비로 펼칩니다. */
+.analysis-wide {
+  display: grid;
+  min-width: 0;
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.analysis-wide .visualization-output,
+.analysis-wide .handover-output,
+.analysis-wide .driver-insights {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  align-items: start;
+}
+
+.analysis-wide .visualization-output > :not(.visual-card),
+.analysis-wide .handover-output > .handover-nav,
+.analysis-wide .driver-insights > :not(.driver-insight) {
+  grid-column: 1 / -1;
+}
+
+.analysis-wide .handover-section .driver-insights {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 760px) {
+  .analysis-wide {
+    gap: 12px;
+    margin-top: 12px;
   }
 }
