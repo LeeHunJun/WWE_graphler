@@ -3382,3 +3382,35 @@ svg {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* 넓은 분석 영역: 시각화·인수인계 요약·원인 분석을 문서 목록과 미리보기 아래에 화면 너비로 펼칩니다. */
+.analysis-wide {
+  display: grid;
+  min-width: 0;
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.analysis-wide .visualization-output,
+.analysis-wide .handover-output,
+.analysis-wide .driver-insights {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  align-items: start;
+}
+
+.analysis-wide .visualization-output > :not(.visual-card),
+.analysis-wide .handover-output > .handover-nav,
+.analysis-wide .driver-insights > :not(.driver-insight) {
+  grid-column: 1 / -1;
+}
+
+.analysis-wide .handover-section .driver-insights {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 760px) {
+  .analysis-wide {
+    gap: 12px;
+    margin-top: 12px;
+  }
+}
