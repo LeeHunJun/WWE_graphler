@@ -1,6 +1,6 @@
 import Chart from "chart.js/auto";
 import { parseNumber, parseTemporal } from "./value-parsing.js";
-import { INSIGHT_LEVEL_LABELS } from "./insight-priority.js";
+import { INSIGHT_LEVEL_LABELS, sortInsightsByPriority } from "./insight-priority.js";
 
 export { parseTemporal };
 
@@ -1013,7 +1013,7 @@ function renderHighlights(card, visual, highlights, sourceLookup, onNavigate) {
   if (highlights.length === 0) return;
   list.append(createElement("h4", "visual-highlights-heading", "중요한 부분"));
 
-  highlights.forEach((highlight) => {
+  sortInsightsByPriority(highlights).forEach((highlight) => {
     const button = createElement("button", "visual-highlight-button");
     button.type = "button";
     button.dataset.highlightLabel = highlight.label;
