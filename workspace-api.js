@@ -71,10 +71,7 @@ export async function handleWorkspaceApi(request, response, { workspaceStore: st
     }
 
     if (!workspaceId) {
-      if (method === "GET") {
-        const workspaces = await store.ensureDefaultMembership(actor);
-        return send(response, 200, { workspaces, myShares: await store.listMySharedDocuments(actorId) });
-      }
+      if (method === "GET") return send(response, 200, { workspaces: await store.ensureDefaultMembership(actor) });
       if (method === "POST") {
         const body = await readJson(request);
         return send(response, 201, { workspace: await store.createWorkspace({ ...body, actor }) });

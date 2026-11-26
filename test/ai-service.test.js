@@ -311,7 +311,7 @@ test("페이지·시트 행 경계에서 긴 입력을 나누고 행 제목을 �
   );
 });
 
-test("한 구간이 세 번 실패해도 다른 PDF 페이지 결과를 합쳐 반환합니다", async () => {
+test("큰 문서의 실패 구간은 한 번만 재시도하고 성공한 PDF 페이지를 합쳐 반환합니다", async () => {
   const pageText = "Alpha project details remain stable. ".repeat(210);
   const longDocument = {
     name: "long-report.pdf",
@@ -345,15 +345,15 @@ test("한 구간이 세 번 실패해도 다른 PDF 페이지 결과를 합쳐 �
     },
   });
 
-  assert.equal(callCount, 4);
+  assert.equal(callCount, 3);
   assert.equal(result.summary[0].source_ids[0], "pdf:page:1");
   assert.match(result.spec.message, /일부 문서 구간/);
-  assert.equal(diagnostics.length, 3);
+  assert.equal(diagnostics.length, 2);
   assert.ok(diagnostics.every((entry) => entry.chunk_index === 2 && entry.chunk_count === 2));
   assert.ok(diagnostics.every((entry) => entry.raw_response === "응답 본문이 잘렸습니다"));
 });
 
-test("한 PDF 구간이 실패해도 성공한 다른 페이지의 요약은 반환합니다", async () => {
+test("큰 PDF의 실패 구간은 두 번 시도한 뒤 성공한 다른 페이지 요약을 반환합니다", async () => {
   const pageText = "Alpha project status is stable. ".repeat(230);
   const longDocument = {
     name: "long-report.pdf",
@@ -383,13 +383,142 @@ test("한 PDF 구간이 실패해도 성공한 다른 페이지의 요약은 반
     },
   });
 
-  assert.equal(callCount, 4);
+  assert.equal(callCount, 3);
   assert.equal(result.summary.length, 1);
   assert.equal(result.summary[0].source_ids[0], "pdf:page:1");
   assert.match(result.spec.message, /일부 문서 구간/);
-  assert.equal(diagnostics.length, 3);
+  assert.equal(diagnostics.length, 2);
   assert.ok(diagnostics.every((entry) => entry.chunk_index === 2 && entry.chunk_count === 2));
   assert.ok(diagnostics.every((entry) => entry.raw_response === "아직 완성되지 않은 응답"));
+});
+
+test("여러 문서 구간은 최대 세 개씩 병렬 처리하고 결과 순서를 안정적으로 합칩니다", async () => {
+  const pageText = "Project alpha status is stable. ".repeat(110);
+  const longDocument = {
+    name: "parallel-report.pdf",
+    type: "pdf",
+    sources: Array.from({ length: 9 }, (_, index) => ({ source_id: `pdf:page:${index + 1}`, text: pageText })),
+  };
+  let active = 0;
+  let maxActive = 0;
+  let callCount = 0;
+  const result = await requestAiSummary(longDocument, {
+    ...options,
+    fetchImpl: async (_url, init) => {
+      active += 1;
+      callCount += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        const request = JSON.parse(init.body);
+        const input = JSON.parse(request.messages.find((message) => message.role === "user").content);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return modelResponse(JSON.stringify({
+          summary: [{
+            text: "Project alpha status is stable.",
+            evidence: "Project alpha status is stable.",
+            source_ids: [input.sources[0].source_id],
+          }],
+          key_points: [],
+          spec: { status: "ok", message: "Project alpha status is stable.", visuals: [] },
+        }));
+      } finally {
+        active -= 1;
+      }
+    },
+  });
+
+  assert.equal(callCount, 3);
+  assert.ok(maxActive > 1, "구간 요청이 실제로 겹쳐 실행됩니다");
+  assert.ok(maxActive <= 3, "제공자에 보내는 동시 요청은 세 개를 넘지 않습니다");
+  assert.equal(result.spec.status, "ok");
+  assert.equal(result.summary.length, 1);
+});
+
+test("큰 문서 구간은 모든 위험 행을 한 번에 요약하라고 강제하지 않습니다", () => {
+  const sources = Array.from({ length: 24 }, (_, index) => ({
+    source_id: `pdf:page:${index + 1}`,
+    text: `Customer issue ${index + 1} remains high risk and mandatory for review.`,
+  }));
+  const document = { name: "dense-risk-report.pdf", type: "pdf", sources };
+  const result = {
+    summary: [{
+      text: "고객 이슈 위험을 검토해야 합니다.",
+      evidence: "Customer issue 1 remains high risk and mandatory for review.",
+      source_ids: [sources[0].source_id],
+    }],
+    key_points: [],
+    spec: { status: "ok", message: "위험 항목을 검토합니다.", visuals: [] },
+  };
+
+  const strictIssues = validateAiQuality(result, document);
+  const chunkIssues = validateAiQuality(result, document, { partialCoverage: true });
+
+  assert.ok(strictIssues.filter((issue) => issue.startsWith("중요한 원본 위치 ")).length > 1);
+  assert.equal(chunkIssues.filter((issue) => issue.startsWith("중요한 원본 위치 ")).length, 0);
+  assert.equal(chunkIssues.filter((issue) => issue.startsWith("위험·필수 원본 ")).length, 0);
+  assert.equal(chunkIssues.filter((issue) => issue.includes("구간의 위험·필수 항목 중 핵심 내용")).length, 1);
+});
+
+test("큰 문서에서 시각화 검증이 실패해도 근거가 맞는 요약은 보존합니다", async () => {
+  const pageText = "Project alpha status is stable. ".repeat(110);
+  const longDocument = {
+    name: "visual-fallback-report.pdf",
+    type: "pdf",
+    sources: Array.from({ length: 9 }, (_, index) => ({ source_id: `pdf:page:${index + 1}`, text: pageText })),
+  };
+  let callCount = 0;
+  const result = await requestAiSummary(longDocument, {
+    ...options,
+    fetchImpl: async (_url, init) => {
+      callCount += 1;
+      const request = JSON.parse(init.body);
+      const input = JSON.parse(request.messages.find((message) => message.role === "user").content);
+      return modelResponse(JSON.stringify({
+        summary: [{
+          text: "Project alpha status is stable.",
+          evidence: "Project alpha status is stable.",
+          source_ids: [input.sources[0].source_id],
+        }],
+        key_points: [],
+        spec: { status: "ok", message: "Unsupported value is 999.", visuals: [] },
+      }));
+    },
+  });
+
+  assert.equal(callCount, 3, "시각화 실패로 긴 구간을 불필요하게 다시 요청하지 않습니다");
+  assert.equal(result.summary.length, 1);
+  assert.equal(result.spec.visuals.length, 0);
+  assert.match(result.spec.message, /시각화는 원문 근거/);
+});
+
+test("모델 호출이 응답 제한을 넘으면 제한 시간 진단을 남기고 재시도합니다", async () => {
+  const diagnostics = [];
+  let callCount = 0;
+  await assert.rejects(requestAiSummary(document, {
+    ...options,
+    analysisTimeoutMs: 35,
+    requestTimeoutMs: 15,
+    onDiagnostic: (entry) => diagnostics.push(entry),
+    fetchImpl: async (_url, init) => {
+      callCount += 1;
+      await new Promise((_resolve, reject) => {
+        const fallbackTimer = setTimeout(() => reject(new Error("fake provider did not abort")), 1000);
+        const abortRequest = () => {
+          clearTimeout(fallbackTimer);
+          reject(init.signal.reason);
+        };
+        if (init.signal.aborted) {
+          abortRequest();
+          return;
+        }
+        init.signal.addEventListener("abort", abortRequest, { once: true });
+      });
+    },
+  }), (error) => error instanceof AiServiceError && error.code === "AI_CALL_FAILED");
+
+  assert.ok(callCount >= 1 && callCount <= 3);
+  assert.ok(diagnostics.some((entry) => entry.stage === "provider_timeout" || entry.stage === "analysis_timeout"));
+  assert.ok(diagnostics.every((entry) => Number.isFinite(entry.duration_ms)));
 });
 
 test("원본에 없는 summary source_id는 한 번 재시도합니다", async () => {
@@ -846,79 +975,4 @@ test("데이터 행이 없는 CSV는 모델을 호출하지 않습니다", async
     fetchImpl: async () => { callCount += 1; return modelResponse(JSON.stringify(validResult)); },
   }), (error) => error instanceof AiServiceError && error.code === "NO_ANALYZABLE_CONTENT");
   assert.equal(callCount, 0);
-});
-
-test("AI 주소가 틀리면(404) 모든 조각을 반복하지 않고 설정 안내를 돌려준다", async () => {
-  let calls = 0;
-  await assert.rejects(
-    requestAiSummary(document, {
-      ...options,
-      fetchImpl: async () => {
-        calls += 1;
-        return new Response("<!doctype html><html><title>앱</title></html>", { status: 404, headers: { "Content-Type": "text/html" } });
-      },
-    }),
-    (error) => error.code === "AI_NOT_CONFIGURED" && error.message.includes("HTTP 404") && error.message.includes("웹 페이지 주소"),
-  );
-  assert.equal(calls, 1);
-});
-
-test("API 키가 거부되면(401) 키를 확인하라고 안내한다", async () => {
-  await assert.rejects(
-    requestAiSummary(document, {
-      ...options,
-      fetchImpl: async () => new Response(JSON.stringify({ error: { code: "invalid_api_key" } }), { status: 401, headers: { "Content-Type": "application/json" } }),
-    }),
-    (error) => error.code === "AI_NOT_CONFIGURED" && error.message.includes("LLM_API_KEY"),
-  );
-});
-
-function largeDocument(rowCount) {
-  return {
-    name: "큰표.csv",
-    type: "csv",
-    sources: [
-      { source_id: "sheet:0:row:1", text: "항목 | 값" },
-      ...Array.from({ length: rowCount }, (_, index) => ({ source_id: `sheet:0:row:${index + 2}`, text: `항목${index + 1} | ${index + 1}` })),
-    ],
-  };
-}
-
-test("큰 표의 조각은 한 번에 최대 4개씩 동시에 요약한다", async () => {
-  let active = 0;
-  let peak = 0;
-  let calls = 0;
-  await requestAiSummary(largeDocument(300), {
-    ...options,
-    fetchImpl: async () => {
-      calls += 1;
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      active -= 1;
-      return new Response("{}", { status: 500, headers: { "Content-Type": "application/json" } });
-    },
-  }).catch(() => {});
-  assert.ok(calls >= 8, `조각마다 호출 (${calls})`);
-  assert.equal(peak, 4);
-});
-
-test("전체 마감 시간이 지나면 남은 조각을 부르지 않고 시간 초과를 알려 준다", async () => {
-  let clock = 0;
-  let calls = 0;
-  await assert.rejects(
-    requestAiSummary(largeDocument(300), {
-      ...options,
-      deadlineMs: 60000,
-      concurrency: 1,
-      now: () => clock,
-      fetchImpl: async () => {
-        calls += 1;
-        clock += 50000;
-        return new Response("{}", { status: 500, headers: { "Content-Type": "application/json" } });
-      },
-    }),
-    (error) => error.code === "AI_TIMEOUT" && error.message.includes("제한 시간"),
-  );
-  assert.ok(calls <= 2, `마감 뒤에는 부르지 않음 (${calls})`);
 });

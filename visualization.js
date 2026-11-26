@@ -1,8 +1,6 @@
 import Chart from "chart.js/auto";
 import { parseNumber, parseTemporal } from "./value-parsing.js";
 import { INSIGHT_LEVEL_LABELS, sortInsightsByPriority } from "./insight-priority.js";
-import { explainHighlight } from "./highlight-explain.js";
-import { analyzeDrivers, buildDriverVisualSpec } from "./driver-analysis.js";
 
 export { parseTemporal };
 
@@ -35,19 +33,12 @@ function getColumnUnit(header) {
   return match?.[1]?.trim() || match?.[2]?.trim() || "";
 }
 
-// 0/1, 1·2·3 같은 숫자 열은 머리글이 날짜·기간을 뜻할 때만 시간 축으로 본다(예: 생존 0/1을 연도로 오인하지 않게).
-const TEMPORAL_HEADER_HINT = /날짜|일자|월|기간|연도|년|date|month|period|year|quarter|분기|주차|week/i;
-
 function getAxisColumn(rows, columnCount) {
   for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
     const values = rows.slice(1).map((row) => String(row[columnIndex] ?? "").trim()).filter(Boolean);
     if (values.length === 0) continue;
 
-    const header = String(rows[0]?.[columnIndex] ?? "").trim();
-    const allNumeric = values.every((value) => parseNumber(value) !== null);
-    if (values.every((value) => parseTemporal(value) !== null) && (!allNumeric || TEMPORAL_HEADER_HINT.test(header))) {
-      return { index: columnIndex, temporal: true };
-    }
+    if (values.every((value) => parseTemporal(value) !== null)) return { index: columnIndex, temporal: true };
     if (values.some((value) => parseNumber(value) === null)) return { index: columnIndex, temporal: false };
   }
 
@@ -324,36 +315,6 @@ function createAutoVisual(sheet, sheetIndex, axis, numericColumns) {
   });
 }
 
-// 기록형 표(승객·고객 목록처럼 같은 항목 값이 여러 행에 반복되는 표)는 행마다 선을 긋지 않고 요인 비교 그래프로 보여 준다.
-function isRecordTable(sheet, axis) {
-  if (axis.temporal) return false;
-  const labels = sheet.rows.slice(1).map((row) => String(row[axis.index] ?? "").trim()).filter(Boolean);
-  return labels.length >= 20 && new Set(labels).size < labels.length * 0.5;
-}
-
-function createRecordVisuals(record, sheetIndex) {
-  try {
-    const result = analyzeDrivers(record, { sheetIndex });
-    if (result?.status !== "ok") return [];
-    return buildDriverVisualSpec(result, record).visuals.map((visual) => ({ ...visual, id: `auto-sheet-${sheetIndex}-${visual.id}` }));
-  } catch {
-    return [];
-  }
-}
-
-// 질문에 답할 때 쓰는, 고른 숫자 열만 담은 그래프(시간 축이면 선, 아니면 막대).
-export function buildColumnVisuals(record, sheetIndex, columnIndexes) {
-  const sheet = record?.sheets?.[sheetIndex];
-  if (!sheet || !Array.isArray(sheet.rows) || sheet.rows.length < 2) return [];
-  const axis = getAxisColumn(sheet.rows, sheet.columnCount);
-  if (!axis) return [];
-  const wanted = new Set(columnIndexes);
-  const columns = getNumericColumns(sheet, axis.index).filter((column) => wanted.has(column.index));
-  if (columns.length === 0) return [];
-  return createAutoVisual(sheet, sheetIndex, axis, columns.slice(0, 4))
-    .map((visual) => ({ ...visual, id: visual.id.replace(/^auto-/, "question-") }));
-}
-
 export function buildSpreadsheetVisualizationSpec(record) {
   const visuals = [];
   let hasNumericColumn = false;
@@ -365,13 +326,6 @@ export function buildSpreadsheetVisualizationSpec(record) {
     const numericColumns = getNumericColumns(sheet, axis.index);
     if (numericColumns.length === 0) return;
     hasNumericColumn = true;
-    if (isRecordTable(sheet, axis)) {
-      const recordVisuals = createRecordVisuals(record, sheetIndex);
-      if (recordVisuals.length > 0) {
-        visuals.push(...recordVisuals);
-        return;
-      }
-    }
     visuals.push(...createAutoVisual(sheet, sheetIndex, axis, numericColumns));
   });
 
@@ -751,48 +705,6 @@ function getChartColor(level, fallback) {
   return level ? LEVEL_COLORS[level] : fallback;
 }
 
-const CHART_FONT_SIZE = 10;
-const CHART_LEGEND_FONT_SIZE = 11;
-const MAX_ROTATED_LABELS = 60;
-const MAX_LABEL_CHARACTERS = 30;
-
-function estimateTextWidth(text, fontSize) {
-  return [...String(text ?? "")].reduce((width, character) => width + (/[\u3131-\uD7A3]/.test(character) ? fontSize : fontSize * 0.6), 0);
-}
-
-// x축 이름이 길어서 가로로는 다 못 보여 줄 때만 대각선(45°)으로 눕혀 모두 표시한다.
-// 짧은 이름(예: 남/여)은 지금처럼 가로로 둔다.
-export function getXAxisLayout(labels, availableWidth, fontSize = CHART_FONT_SIZE) {
-  const list = (labels || []).map((label) => String(label ?? ""));
-  const longest = list.reduce((max, label) => Math.max(max, estimateTextWidth(label.slice(0, MAX_LABEL_CHARACTERS), fontSize)), 0);
-  const width = Number.isFinite(availableWidth) && availableWidth > 0 ? availableWidth : 600;
-  const slot = (width - 40) / Math.max(1, list.length);
-  const rotate = list.length > 0 && list.length <= MAX_ROTATED_LABELS && longest + 6 > slot;
-  return {
-    rotate,
-    // 눕힌 글자가 차지하는 높이만큼 그래프 영역을 늘려 막대·선이 납작해지지 않게 한다.
-    extraHeight: rotate ? Math.min(150, Math.round(longest * Math.SQRT1_2) + 8) : 0,
-    ticks: rotate
-      ? {
-        autoSkip: false,
-        maxRotation: 45,
-        minRotation: 45,
-        font: { size: fontSize },
-        callback(value) {
-          const label = String(this.getLabelForValue(value) ?? "");
-          return label.length > MAX_LABEL_CHARACTERS ? `${label.slice(0, MAX_LABEL_CHARACTERS - 1)}…` : label;
-        },
-      }
-      : { maxRotation: 0, autoSkip: true, font: { size: fontSize } },
-  };
-}
-
-function applyXAxisLayout(wrap, content, labels) {
-  const layout = getXAxisLayout(labels, content.clientWidth || wrap.clientWidth);
-  if (layout.extraHeight > 0) wrap.style.height = `${205 + layout.extraHeight}px`;
-  return layout.ticks;
-}
-
 function createChartCanvas(content, label) {
   const wrap = createElement("div", "visual-chart-wrap");
   const canvas = document.createElement("canvas");
@@ -808,8 +720,7 @@ function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, ch
   const accessibleDescription = visual.data.series
     .map((series) => `${series.name}: ${series.values.map((value) => value === null ? "결측" : value).join(", ")}`)
     .join(". ");
-  const { wrap, canvas } = createChartCanvas(content, accessibleDescription);
-  const xTicks = applyXAxisLayout(wrap, content, visual.data.labels);
+  const { canvas } = createChartCanvas(content, accessibleDescription);
 
   const datasets = visual.data.series.map((series, seriesIndex) => ({
     label: series.name,
@@ -839,7 +750,7 @@ function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, ch
       maintainAspectRatio: false,
       interaction: { mode: "nearest", intersect: true },
       plugins: {
-        legend: { display: datasets.length > 1, labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true, font: { size: CHART_LEGEND_FONT_SIZE } } },
+        legend: { display: datasets.length > 1, labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true, font: { size: 9 } } },
         tooltip: {
           callbacks: {
             label(context) {
@@ -850,8 +761,8 @@ function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, ch
         },
       },
       scales: {
-        x: { grid: { display: false }, ticks: xTicks },
-        y: { beginAtZero: false, grid: { color: "#edf0ed" }, ticks: { font: { size: CHART_FONT_SIZE }, maxTicksLimit: 5 } },
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, font: { size: 8 } } },
+        y: { beginAtZero: false, grid: { color: "#edf0ed" }, ticks: { font: { size: 8 }, maxTicksLimit: 5 } },
       },
       onClick(_event, activeElements) {
         const active = activeElements[0];
@@ -869,8 +780,7 @@ function drawBarChart(visual, content, highlights, sourceLookup, onNavigate, cha
   const accessibleDescription = visual.data.labels
     .map((label, index) => `${label}: ${visual.data.values[index] === null ? "결측" : visual.data.values[index]}`)
     .join(". ");
-  const { wrap, canvas } = createChartCanvas(content, accessibleDescription);
-  const xTicks = applyXAxisLayout(wrap, content, visual.data.labels);
+  const { canvas } = createChartCanvas(content, accessibleDescription);
   const chart = new Chart(canvas, {
     type: "bar",
     data: {
@@ -897,8 +807,8 @@ function drawBarChart(visual, content, highlights, sourceLookup, onNavigate, cha
         },
       },
       scales: {
-        x: { grid: { display: false }, ticks: xTicks },
-        y: { beginAtZero: true, grid: { color: "#edf0ed" }, ticks: { font: { size: CHART_FONT_SIZE }, maxTicksLimit: 5 } },
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, font: { size: 8 } } },
+        y: { beginAtZero: true, grid: { color: "#edf0ed" }, ticks: { font: { size: 8 }, maxTicksLimit: 5 } },
       },
       onClick(_event, activeElements) {
         const active = activeElements[0];
@@ -1039,38 +949,15 @@ function formatDerivedValue(value) {
   return String(value);
 }
 
-function appendExplanation(detail, explanation) {
-  if (!explanation?.sentences?.length) return;
-  const box = createElement("div", "highlight-explanation");
-  box.append(createElement("strong", "", "이렇게 볼 수 있어요"));
-  const list = createElement("ul", "highlight-explanation-list");
-  explanation.sentences.forEach((sentence) => {
-    list.append(createElement("li", `highlight-explanation-item level-${sentence.level}`, sentence.text));
-  });
-  box.append(list);
-  if (explanation.caveat) box.append(createElement("p", "highlight-explanation-caveat", explanation.caveat));
-  detail.append(box);
-}
-
-function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, sourceDocument) {
+function showHighlightDetail(card, highlight, sourceLookup, onNavigate) {
   card.querySelector(".highlight-detail")?.remove();
   card.querySelectorAll(".visual-data-highlighted").forEach((element) => element.classList.remove("visual-data-highlighted"));
   const detail = createElement("div", "highlight-detail");
   detail.append(createElement("strong", "", highlight.label));
   detail.append(createElement("p", "", highlight.reason));
 
-  let explanation = null;
-  try {
-    explanation = explainHighlight(sourceDocument, visual, highlight);
-  } catch {
-    explanation = null;
-  }
-  appendExplanation(detail, explanation);
-
   if (highlight.derived) {
-    // 계산식은 접어 두고, 궁금할 때만 펼쳐 볼 수 있게 한다.
-    const derived = createElement("details", "highlight-derived");
-    derived.append(createElement("summary", "", "계산 근거 보기"));
+    const derived = createElement("div", "highlight-derived");
     derived.append(createElement("strong", "", "계산식"));
     derived.append(createElement("p", "", highlight.derived.formula));
     derived.append(createElement("strong", "", "계산에 사용한 원래 값"));
@@ -1121,7 +1008,7 @@ function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, 
   if (firstSourceId) onNavigate?.(firstSourceId);
 }
 
-function renderHighlights(card, visual, highlights, sourceLookup, onNavigate, sourceDocument = null) {
+function renderHighlights(card, visual, highlights, sourceLookup, onNavigate) {
   const list = card.querySelector(".visual-highlights");
   if (highlights.length === 0) return;
   list.append(createElement("h4", "visual-highlights-heading", "중요한 부분"));
@@ -1139,7 +1026,7 @@ function renderHighlights(card, visual, highlights, sourceLookup, onNavigate, so
     path.setAttribute("d", "M3 8h10M9 4l4 4-4 4");
     arrow.append(path);
     button.append(level, label, arrow);
-    button.addEventListener("click", () => showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, sourceDocument));
+    button.addEventListener("click", () => showHighlightDetail(card, highlight, sourceLookup, onNavigate));
     list.append(button);
   });
 }
@@ -1221,7 +1108,7 @@ export function renderVisuals(spec, { container, sourceDocument = null, onNaviga
     container.append(card);
     try {
       renderVisualContent(visual, content, highlights, sourceLookup, onNavigate, chartList);
-      renderHighlights(card, visual, highlights, sourceLookup, onNavigate, sourceDocument);
+      renderHighlights(card, visual, highlights, sourceLookup, onNavigate);
       renderedCount += 1;
     } catch (error) {
       card.remove();

@@ -6,12 +6,9 @@ import { buildDocumentChunks } from "./ai-chunks.js";
 const MODEL_NAME = "jitda-chat";
 const RESPONSE_RETRY_LIMIT = 2;
 const MAX_COMPLETION_TOKENS = 5000;
-// 큰 표는 여러 조각으로 나눠 AI를 부른다. 조각을 하나씩 차례로 부르면 조각 수 × 응답 시간이 걸려
-// 브라우저(150초)·배포 프록시 제한을 넘기므로, 몇 개씩 동시에 부르고 전체 마감 시간을 둔다.
-const CHUNK_CONCURRENCY = 4;
-const DEFAULT_DEADLINE_MS = 110000;
-const MODEL_CALL_TIMEOUT_MS = 120000;
-const MIN_CALL_BUDGET_MS = 8000;
+const MODEL_REQUEST_TIMEOUT_MS = 35_000;
+const ANALYSIS_TIMEOUT_MS = 300_000;
+const MAX_CONCURRENT_CHUNKS = 3;
 
 export class AiServiceError extends Error {
   constructor(code, message, diagnostic = null) {
@@ -105,6 +102,13 @@ function parseAiEnvelope(content, availableSources) {
   return normalizeAiEnvelope(parsed, availableSources);
 }
 
+function getUnrecoverableChunkIssues(issues) {
+  return issues.filter((issue) =>
+    issue.includes("요약의 증가·감소 표현이 원문 수치 변화와 반대")
+    || issue.includes("시계열 수치의 전체 요약에 기간 간 변화 방향이 없습니다")
+    || issue.includes("관련 핵심 원본이 전체 요약이나 핵심 내용에서 빠졌습니다"));
+}
+
 function compactVisualizationContract(contractText) {
   const start = contractText.indexOf("## Top-Level Schema");
   const end = contractText.indexOf("## Automatic CSV and XLSX Rules");
@@ -163,8 +167,11 @@ function makeSystemPrompt({ contractText, dataContractText, sampleSpec }) {
   ].join("\n");
 }
 
-async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = null, timeoutMs = MODEL_CALL_TIMEOUT_MS }) {
+async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = null, signal, timeoutMs = MODEL_REQUEST_TIMEOUT_MS }) {
   let response;
+  const startedAt = Date.now();
+  const modelTimeout = AbortSignal.timeout(timeoutMs);
+  const requestSignal = signal ? AbortSignal.any([signal, modelTimeout]) : modelTimeout;
   try {
     response = await fetchImpl(endpoint, {
       method: "POST",
@@ -177,13 +184,20 @@ async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = nu
         messages,
         ...(Number.isInteger(maxTokens) ? { max_completion_tokens: maxTokens } : {}),
       }),
-      signal: AbortSignal.timeout(Math.max(1000, Math.min(MODEL_CALL_TIMEOUT_MS, timeoutMs))),
+      signal: requestSignal,
     });
   } catch (error) {
-    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
-    throw new AiServiceError("AI_CALL_FAILED", timedOut ? "AI 서비스 응답 시간이 초과되었습니다." : "AI 서비스에 연결하지 못했습니다.", {
-      stage: timedOut ? "timeout" : "network_error",
-      retryable: true,
+    const analysisTimedOut = Boolean(signal?.aborted);
+    const requestTimedOut = modelTimeout.aborted;
+    const stage = analysisTimedOut ? "analysis_timeout" : requestTimedOut ? "provider_timeout" : "network_error";
+    throw new AiServiceError("AI_CALL_FAILED", analysisTimedOut
+      ? "AI 분석 전체 제한 시간(5분)을 넘겼습니다."
+      : requestTimedOut ? `LLM 응답 제한 시간(${Math.ceil(timeoutMs / 1000)}초)을 넘겼습니다.` : "AI 서비스에 연결하지 못했습니다.", {
+      stage,
+      retryable: !analysisTimedOut,
+      duration_ms: Date.now() - startedAt,
+      timeout_ms: analysisTimedOut ? (signal?.reason?.name === "TimeoutError" ? ANALYSIS_TIMEOUT_MS : null) : requestTimedOut ? timeoutMs : null,
+      error_name: error?.name || "Error",
       response_length: 0,
       raw_response: "",
     });
@@ -193,7 +207,13 @@ async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = nu
   try {
     rawBody = await response.text();
   } catch {
-    throw new AiServiceError("AI_CALL_FAILED", "AI 서비스 응답을 읽지 못했습니다.");
+    throw new AiServiceError("AI_CALL_FAILED", "AI 서비스 응답을 읽지 못했습니다.", {
+      stage: "response_read_error",
+      duration_ms: Date.now() - startedAt,
+      retryable: true,
+      response_length: 0,
+      raw_response: "",
+    });
   }
 
   let responseBody = null;
@@ -211,6 +231,7 @@ async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = nu
       status: response.status,
       retryable: response.status === 429 || response.status >= 500,
       provider_code: providerCode,
+      duration_ms: Date.now() - startedAt,
       response_length: rawBody.length,
       raw_response: rawBody,
     });
@@ -220,6 +241,7 @@ async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = nu
     throw new AiServiceError("AI_RESPONSE_INVALID", "AI 서비스 응답이 JSON 형식이 아닙니다.", {
       stage: "provider_json_parse",
       status: response.status,
+      duration_ms: Date.now() - startedAt,
       response_length: rawBody.length,
       raw_response: rawBody,
     });
@@ -233,6 +255,7 @@ async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = nu
       finish_reason: "length",
       response_id: responseBody?.id || null,
       usage: responseBody?.usage || null,
+      duration_ms: Date.now() - startedAt,
       response_length: content.length,
       raw_response: content,
     });
@@ -243,6 +266,7 @@ async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = nu
     responseId: responseBody?.id || null,
     usage: responseBody?.usage || null,
     providerBodyLength: rawBody.length,
+    durationMs: Date.now() - startedAt,
   };
 }
 
@@ -344,10 +368,10 @@ async function requestSingleChunk(document, {
   sampleSpec,
   onDiagnostic,
   fetchImpl,
+  signal,
+  requestTimeoutMs,
   chunkIndex,
   chunkCount,
-  deadline = Infinity,
-  now = Date.now,
 }) {
   const messages = [
     { role: "system", content: makeSystemPrompt({ contractText, dataContractText, sampleSpec }) },
@@ -360,22 +384,73 @@ async function requestSingleChunk(document, {
     },
   ];
   const availableSources = new Map(document.sources.map((source) => [source.source_id, { text: source.text }]));
+  // 긴 문서는 재시도를 한 번으로 제한해 구간 수에 따른 대기 시간을 줄입니다.
+  const retryLimit = chunkCount > 1 ? Math.min(RESPONSE_RETRY_LIMIT, 1) : RESPONSE_RETRY_LIMIT;
 
-  for (let attempt = 0; attempt <= RESPONSE_RETRY_LIMIT; attempt += 1) {
+  for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
     let modelResponse = null;
     let content = "";
-    const budget = deadline - now();
-    if (budget < MIN_CALL_BUDGET_MS) {
-      throw new AiServiceError("AI_TIMEOUT", "제한 시간 안에 이 조각을 요약하지 못했습니다.", { stage: "deadline", retryable: false });
-    }
     try {
-      modelResponse = await callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens: MAX_COMPLETION_TOKENS, timeoutMs: budget });
+      if (signal.aborted) {
+        throw new AiServiceError("AI_CALL_FAILED", "AI 분석 전체 제한 시간(5분)을 넘겼습니다.", {
+          stage: "analysis_timeout",
+          retryable: false,
+          timeout_ms: ANALYSIS_TIMEOUT_MS,
+          response_length: 0,
+          raw_response: "",
+        });
+      }
+      modelResponse = await callModel({
+        endpoint,
+        apiKey,
+        messages,
+        fetchImpl,
+        maxTokens: MAX_COMPLETION_TOKENS,
+        signal,
+        timeoutMs: requestTimeoutMs,
+      });
       content = modelResponse.content;
       const parsed = parseAiEnvelope(content, availableSources);
       const invalidReason = validateAiEnvelope(parsed, availableSources);
       if (invalidReason) throw new AiServiceError("AI_RESPONSE_INVALID", invalidReason);
-      const qualityIssues = validateAiQuality(parsed, document);
-      if (qualityIssues.length > 0) throw new AiServiceError("AI_RESPONSE_INVALID", qualityIssues.join(" "));
+      const qualityIssues = validateAiQuality(parsed, document, { partialCoverage: chunkCount > 1 });
+      if (qualityIssues.length > 0) {
+        const unrecoverableIssues = chunkCount > 1 ? getUnrecoverableChunkIssues(qualityIssues) : qualityIssues;
+        if (chunkCount > 1 && unrecoverableIssues.length === 0) {
+          if (typeof onDiagnostic === "function") {
+            try {
+              await onDiagnostic({
+                model: MODEL_NAME,
+                document_type: document.type,
+                chunk_index: chunkIndex,
+                chunk_count: chunkCount,
+                attempt: attempt + 1,
+                retry_limit: retryLimit,
+                stage: "visuals_omitted",
+                issue: "원문 근거가 확인된 요약을 보존하고, 품질 검증에 실패한 시각화는 제외했습니다.",
+                quality_issue_count: qualityIssues.length,
+                finish_reason: modelResponse.finishReason,
+                response_id: modelResponse.responseId,
+                usage: modelResponse.usage,
+                duration_ms: modelResponse.durationMs,
+                response_length: content.length,
+                raw_response: content,
+              });
+            } catch {
+              // Optional diagnostics must not discard a valid, source-grounded summary.
+            }
+          }
+          return {
+            ...parsed,
+            spec: {
+              status: parsed.spec.status,
+              message: "자료 구간을 분석했습니다. 일부 시각화는 원문 근거를 충분히 확인할 수 없어 생략했습니다.",
+              visuals: [],
+            },
+          };
+        }
+        throw new AiServiceError("AI_RESPONSE_INVALID", unrecoverableIssues.join(" ") || qualityIssues.join(" "));
+      }
       return parsed;
     } catch (error) {
       if (error?.code !== "AI_RESPONSE_INVALID" && error?.code !== "AI_CALL_FAILED") throw error;
@@ -386,11 +461,14 @@ async function requestSingleChunk(document, {
         chunk_index: chunkIndex,
         chunk_count: chunkCount,
         attempt: attempt + 1,
+        retry_limit: retryLimit,
         stage: error.diagnostic?.stage || "response_validation",
         issue: error.message,
         finish_reason: modelResponse?.finishReason || error.diagnostic?.finish_reason || null,
         response_id: modelResponse?.responseId || error.diagnostic?.response_id || null,
         usage: modelResponse?.usage || error.diagnostic?.usage || null,
+        duration_ms: modelResponse?.durationMs ?? error.diagnostic?.duration_ms ?? null,
+        timeout_ms: error.diagnostic?.timeout_ms ?? null,
         response_length: modelResponse?.content?.length ?? error.diagnostic?.response_length ?? content.length,
         raw_response: modelResponse?.content ?? error.diagnostic?.raw_response ?? content,
       };
@@ -404,11 +482,11 @@ async function requestSingleChunk(document, {
 
       if (error.code === "AI_CALL_FAILED" && error.diagnostic?.retryable === false) throw error;
 
-      if (attempt === RESPONSE_RETRY_LIMIT) throw error;
+      if (attempt === retryLimit) throw error;
       if (content) messages.push({ role: "assistant", content: content.slice(0, 20000) });
       messages.push({
         role: "user",
-        content: attempt === RESPONSE_RETRY_LIMIT - 1
+        content: attempt === retryLimit - 1
           ? `검증 실패: ${error.message}\n이번에는 JSON 객체만 출력하고 설명이나 코드 펜스는 붙이지 마세요. summary는 최대 2개, key_points는 최대 3개로 제한하세요. 원문에 명시된 절차는 flowchart, 날짜가 있는 일정은 timeline, 수치 변경은 bar_chart·comparison_table·line_chart 중 맞는 유형으로 표현하세요. 일정과 변경을 모두 빠뜨리지 말고 visual당 highlight는 최대 3개로 중요 항목을 우선하세요. 수치 증감 highlight마다 derived에 계산식, 원래 값과 기간, 결과를 넣으세요. CSV·Excel 수치는 제목 행과 데이터 행의 source_id를 함께 연결하세요.`
           : `검증 실패: ${error.message}\n원문과 source_id를 다시 확인하고 지정된 데이터 계약 형식의 완전한 JSON 객체만 출력하세요. 설명이나 코드 펜스는 붙이지 마세요.`,
       });
@@ -418,24 +496,20 @@ async function requestSingleChunk(document, {
   throw new AiServiceError("AI_RESPONSE_INVALID", "잠시 후 다시 시도해 주세요");
 }
 
-// 주소가 틀렸거나(404·405) 키가 거부된(401·403) 경우는 다시 시도해도 같으므로, 설정을 고치라는 안내로 바꾼다.
-function toConfigurationError(error) {
-  const status = error?.diagnostic?.stage === "provider_http_error" ? error.diagnostic.status : null;
-  if (status === 404 || status === 405) {
-    const raw = String(error.diagnostic.raw_response || "").trimStart().slice(0, 200).toLowerCase();
-    const looksLikeWebPage = raw.startsWith("<!doctype") || raw.startsWith("<html");
-    return new AiServiceError(
-      "AI_NOT_CONFIGURED",
-      `LLM_BASE_URL 주소에서 AI API를 찾지 못했어요 (HTTP ${status}). ${looksLikeWebPage ? "지금 주소는 AI API가 아니라 웹 페이지 주소로 보여요. " : ""}AI 서비스에서 발급한 OpenAI 호환 API 주소(보통 /v1로 끝나요)를 .env.local의 LLM_BASE_URL에 넣고 서버를 다시 시작해 주세요.`,
-    );
-  }
-  if (status === 401 || status === 403) {
-    return new AiServiceError(
-      "AI_NOT_CONFIGURED",
-      `AI 서비스가 API 키를 거부했어요 (HTTP ${status}). .env.local의 LLM_API_KEY와 LLM_BASE_URL이 같은 서비스의 것인지 확인해 주세요.`,
-    );
-  }
-  return null;
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 export async function requestAiSummary(document, {
@@ -446,9 +520,8 @@ export async function requestAiSummary(document, {
   dataContractText = "",
   onDiagnostic,
   fetchImpl = fetch,
-  deadlineMs = DEFAULT_DEADLINE_MS,
-  concurrency = CHUNK_CONCURRENCY,
-  now = Date.now,
+  analysisTimeoutMs = ANALYSIS_TIMEOUT_MS,
+  requestTimeoutMs = MODEL_REQUEST_TIMEOUT_MS,
 } = {}) {
   if (!apiKey) throw new AiServiceError("AI_NOT_CONFIGURED", "LLM_API_KEY 환경변수가 설정되지 않았습니다.");
   if (!baseUrl) throw new AiServiceError("AI_NOT_CONFIGURED", "LLM_BASE_URL 환경변수가 설정되지 않았습니다.");
@@ -459,52 +532,34 @@ export async function requestAiSummary(document, {
 
   const endpoint = resolveChatCompletionsUrl(baseUrl);
   const chunks = buildDocumentChunks(document);
-  const deadline = now() + deadlineMs;
-  const results = new Array(chunks.length).fill(null);
-  const failures = [];
-  let configurationError = null;
-  let nextIndex = 0;
-
-  // 조각을 몇 개씩 동시에 요약한다. 주소·키 오류가 나오면 남은 조각은 부르지 않는다.
-  async function worker() {
-    while (nextIndex < chunks.length && !configurationError) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (deadline - now() < MIN_CALL_BUDGET_MS) {
-        failures.push(new AiServiceError("AI_TIMEOUT", "제한 시간 안에 이 조각을 요약하지 못했습니다."));
-        continue;
-      }
-      try {
-        results[index] = await requestSingleChunk({ ...document, sources: chunks[index] }, {
-          apiKey,
-          endpoint,
-          contractText,
-          dataContractText,
-          sampleSpec,
-          fetchImpl,
-          chunkIndex: index + 1,
-          chunkCount: chunks.length,
-          onDiagnostic,
-          deadline,
-          now,
-        });
-      } catch (error) {
-        configurationError ||= toConfigurationError(error);
-        failures.push(error);
-      }
+  const analysisSignal = AbortSignal.timeout(analysisTimeoutMs);
+  const outcomes = await mapWithConcurrency(chunks, MAX_CONCURRENT_CHUNKS, async (chunk, index) => {
+    if (analysisSignal.aborted) {
+      return { error: new AiServiceError("AI_CALL_FAILED", "AI 분석 전체 제한 시간을 넘겼습니다.", { stage: "analysis_timeout", retryable: false }) };
     }
-  }
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, chunks.length)) }, worker));
-  if (configurationError) throw configurationError;
-  const successful = results.filter(Boolean);
+    try {
+      const result = await requestSingleChunk({ ...document, sources: chunk }, {
+        apiKey,
+        endpoint,
+        contractText,
+        dataContractText,
+        sampleSpec,
+        fetchImpl,
+        signal: analysisSignal,
+        requestTimeoutMs,
+        chunkIndex: index + 1,
+        chunkCount: chunks.length,
+        onDiagnostic,
+      });
+      return { result };
+    } catch (error) {
+      return { error };
+    }
+  });
+  const successful = outcomes.filter((outcome) => outcome?.result).map((outcome) => outcome.result);
+  const failures = outcomes.filter((outcome) => outcome?.error).map((outcome) => outcome.error);
 
   if (successful.length === 0) {
-    if (failures.some((error) => error?.code === "AI_TIMEOUT" || error?.diagnostic?.stage === "timeout")) {
-      throw new AiServiceError(
-        "AI_TIMEOUT",
-        `문서가 커서 AI가 제한 시간 안에 요약을 끝내지 못했어요 (${chunks.length}개 조각). 질문창으로 필요한 부분만 물어보시거나, 잠시 후 다시 시도해 주세요.`,
-      );
-    }
     const lastError = failures.at(-1);
     if (lastError?.code === "AI_CALL_FAILED") throw new AiServiceError("AI_CALL_FAILED", "잠시 후 다시 시도해 주세요");
     throw new AiServiceError("AI_RESPONSE_INVALID", "잠시 후 다시 시도해 주세요");

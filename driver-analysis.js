@@ -734,9 +734,7 @@ export function analyzeDrivers(record, { sheetIndex = 0, targetIndex = null, foc
   };
   if (target.kind === "binary") {
     target.otherValue = uniqueValues.find((value) => value !== target.positiveValue);
-    // "생존=1 비율" 대신 읽기 쉬운 "생존률"로 부른다. 한글 이름이 아니면 기존 표기를 쓴다.
-    const stem = target.baseName.replace(/\s*(여부|유무)$/, "");
-    target.measureLabel = /[가-힣]$/.test(stem) ? `${stem}률` : `${target.baseName}=${target.positiveValue} 비율`;
+    target.measureLabel = `${target.baseName}=${target.positiveValue} 비율`;
   } else {
     target.measureLabel = `평균 ${target.baseName}`;
   }

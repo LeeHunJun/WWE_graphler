@@ -92,7 +92,6 @@ export function initWorkspace(hooks) {
     workspaces: [],
     workspace: null,
     sharedDocuments: [],
-    myShares: [],
     insights: [],
     online: false,
     loading: true,
@@ -208,9 +207,8 @@ export function initWorkspace(hooks) {
 
   async function refresh({ quiet = true } = {}) {
     try {
-      const { workspaces, myShares } = await api("");
+      const { workspaces } = await api("");
       state.workspaces = workspaces;
-      state.myShares = Array.isArray(myShares) ? myShares : [];
       state.online = true;
       const params = new URLSearchParams(window.location.search);
       const invited = params.get("workspace");
@@ -394,7 +392,7 @@ export function initWorkspace(hooks) {
       card.append(meta);
 
       const actions = el("div", "team-card-actions");
-      const imported = Boolean(findLocalDocument(item, localDocuments));
+      const imported = localDocuments.some((record) => record.sharedFrom?.documentId === item.id);
       const openButton = el("button", "team-primary-button", imported ? "보관함에서 보기" : "내 보관함으로 열기");
       openButton.type = "button";
       openButton.addEventListener("click", async () => {
@@ -417,7 +415,6 @@ export function initWorkspace(hooks) {
           onConfirm: async () => {
             await api(`/${encodeURIComponent(state.workspace.id)}/shared-documents/${encodeURIComponent(item.id)}`, { method: "DELETE" });
             state.sharedDocuments = state.sharedDocuments.filter((entry) => entry.id !== item.id);
-            state.myShares = state.myShares.filter((entry) => entry.id !== item.id);
             renderAll();
             hooks.showToast(`“${item.name}” 공유를 해제했어요.`);
           },
@@ -787,15 +784,6 @@ export function initWorkspace(hooks) {
       body: { note, record: payload },
     });
     state.sharedDocuments = [document, ...state.sharedDocuments];
-    if (document.originId) {
-      state.myShares = [{
-        id: document.id,
-        workspaceId: state.workspace.id,
-        workspaceName: state.workspace.name,
-        originId: document.originId,
-        sharedAt: document.sharedAt,
-      }, ...state.myShares];
-    }
     renderAll();
     return document;
   }
@@ -876,29 +864,8 @@ export function initWorkspace(hooks) {
     openDialog($("#save-insight-dialog"));
   }
 
-  // 공유 문서에 해당하는 내 보관함 문서: 내가 공유한 원본이거나, 이미 내 보관함으로 연 사본.
-  function findLocalDocument(entry, localDocuments = hooks.getDocuments()) {
-    if (!entry) return null;
-    return localDocuments.find((record) => record.sharedFrom?.documentId === entry.id)
-      || (entry.originId ? localDocuments.find((record) => record.id === entry.originId) : null)
-      || null;
-  }
-
-  // 이 문서가 공유된 워크스페이스 이름 목록(중복 제거).
-  function sharedWorkspacesFor(record) {
-    if (!record) return [];
-    const names = new Map();
-    for (const share of state.myShares) {
-      if (share.originId === record.id) names.set(share.workspaceId, share.workspaceName);
-    }
-    if (state.workspace && state.sharedDocuments.some((item) => item.originId === record.id && item.sharedBy?.id === state.profile.id)) {
-      names.set(state.workspace.id, state.workspace.name);
-    }
-    return [...names.values()];
-  }
-
   async function openSharedDocument(sharedDocumentId) {
-    const local = findLocalDocument(state.sharedDocuments.find((item) => item.id === sharedDocumentId) || { id: sharedDocumentId });
+    const local = hooks.getDocuments().find((record) => record.sharedFrom?.documentId === sharedDocumentId);
     if (local) {
       navigate("overview");
       hooks.openDocument(local.id);
@@ -1093,6 +1060,5 @@ export function initWorkspace(hooks) {
     openSaveInsightDialog,
     refreshView: renderAll,
     isSharedDocument: (record) => state.sharedDocuments.some((item) => item.originId === record.id || item.id === record.sharedFrom?.documentId),
-    sharedWorkspacesFor,
   };
 }

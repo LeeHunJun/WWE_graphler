@@ -4,7 +4,6 @@ import { validateAiQuality } from "./ai-quality.js";
 import { renderDriverPanel } from "./driver-view.js";
 import { renderHandoverPanel } from "./handover-view.js";
 import { initWorkspace } from "./workspace.js";
-import { answerQuestion, suggestQuestions } from "./question-answer.js";
 import { ensureSignedIn, signOut, updateProfile } from "./auth.js";
 
 const LEGACY_DATABASE_NAME = "grappler-local-documents";
@@ -19,8 +18,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const SAMPLE_DOCUMENT_ID = "grappler-sample-work-report";
 const UNREADABLE_MESSAGE = "파일의 내용을 읽을 수 없습니다. 파일을 확인한 후 다시 업로드해 주세요";
 const AI_RETRY_MESSAGE = "잠시 후 다시 시도해 주세요";
-// 자동 시각화 규칙이 바뀌면 올린다. 저장된 문서의 자동 그래프를 새 규칙으로 다시 만든다.
-const VISUAL_SPEC_VERSION = 2;
+const AI_JOB_CLIENT_TIMEOUT_MS = 12 * 60 * 1000;
 const FILE_TYPES = {
   pdf: { label: "PDF", icon: "P", className: "pdf" },
   csv: { label: "CSV", icon: "C", className: "csv" },
@@ -48,14 +46,6 @@ const previewFileIcon = document.querySelector("#preview-file-icon");
 const previewMeta = document.querySelector("#preview-meta");
 const previewData = document.querySelector("#preview-data");
 const visualizationOutput = document.querySelector("#visualization-output");
-const questionForm = document.querySelector("#question-form");
-const questionInput = document.querySelector("#question-input");
-const questionSuggestions = document.querySelector("#question-suggestions");
-const questionAnswer = document.querySelector("#question-answer");
-const questionAnswerTitle = document.querySelector("#question-answer-title");
-const questionAnswerSentences = document.querySelector("#question-answer-sentences");
-const extraInsights = document.querySelector("#extra-insights");
-const extraVisualizationOutput = document.querySelector("#extra-visualization-output");
 const aiSummarizeButton = document.querySelector("#ai-summarize-button");
 const aiSummarizeLabel = document.querySelector("#ai-summarize-label");
 const aiSummaryCard = document.querySelector("#ai-summary-card");
@@ -72,11 +62,6 @@ const developerTools = document.querySelector("#developer-tools");
 const toast = document.querySelector("#toast");
 const saveInsightButton = document.querySelector("#save-insight-button");
 const deleteDocumentDialog = document.querySelector("#delete-document-dialog");
-const renameDocumentDialog = document.querySelector("#rename-document-dialog");
-const renameDocumentForm = document.querySelector("#rename-document-form");
-const renameDocumentOriginal = document.querySelector("#rename-document-original");
-const renameDocumentReset = document.querySelector("#rename-document-reset");
-const previewRenameButton = document.querySelector("#preview-rename-button");
 const deleteDocumentFileName = document.querySelector("#delete-document-file-name");
 const cancelDeleteDocumentButton = document.querySelector("#cancel-delete-document");
 const confirmDeleteDocumentButton = document.querySelector("#confirm-delete-document");
@@ -462,7 +447,6 @@ async function extractDocument(file) {
     record.visualSpec = type === "pdf"
       ? { status: "ok", message: "AI 요약 연결 후 시각화가 표시됩니다", visuals: [] }
       : buildSpreadsheetVisualizationSpec(record);
-    record.visualSpecVersion = VISUAL_SPEC_VERSION;
     return record;
   } catch (error) {
     if (error instanceof FileProcessingError) throw error;
@@ -511,7 +495,7 @@ function getDocumentSearchText(record) {
     const extractedText = record.type === "pdf"
       ? record.pages.map((page) => page.text).join(" ")
       : record.sheets.map((sheet) => `${sheet.name} ${sheet.rows.map((row) => row.join(" ")).join(" ")}`).join(" ");
-    searchCache.set(record.id, `${record.name} ${record.originalName || ""} ${extractedText}`.toLocaleLowerCase("ko"));
+    searchCache.set(record.id, `${record.name} ${extractedText}`.toLocaleLowerCase("ko"));
   }
   return searchCache.get(record.id);
 }
@@ -559,7 +543,6 @@ function createDocumentRow(record) {
   nameLine.className = "document-name-line";
   const name = document.createElement("strong");
   name.textContent = record.name;
-  if (record.originalName && record.originalName !== record.name) name.title = `원본 파일: ${record.originalName}`;
   const typeBadge = document.createElement("span");
   typeBadge.className = "file-type";
   typeBadge.textContent = typeInfo.label;
@@ -570,14 +553,6 @@ function createDocumentRow(record) {
     sharedBadge.textContent = "팀 공유";
     sharedBadge.title = `${record.sharedFrom.workspaceName || "팀"} · ${record.sharedFrom.sharedBy || "팀원"} 님이 공유`;
     nameLine.append(sharedBadge);
-  }
-  const sharedTo = workspace?.sharedWorkspacesFor?.(record) || [];
-  if (sharedTo.length > 0) {
-    const sharedToBadge = document.createElement("span");
-    sharedToBadge.className = "file-type shared-to-badge";
-    sharedToBadge.textContent = sharedTo.length === 1 ? `${sharedTo[0]}에 공유됨` : `${sharedTo[0]} 외 ${sharedTo.length - 1}곳에 공유됨`;
-    sharedToBadge.title = `공유한 워크스페이스: ${sharedTo.join(", ")}`;
-    nameLine.append(sharedToBadge);
   }
   const summary = document.createElement("span");
   summary.className = "document-summary";
@@ -612,25 +587,16 @@ function createDocumentRow(record) {
   deleteButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2m3 0-.7 10H5.7L5 6m3 3v4m4-4v4" /></svg>';
   deleteButton.addEventListener("click", () => openDeleteDocumentDialog(record));
 
-  const renameButton = document.createElement("button");
-  renameButton.type = "button";
-  renameButton.className = "document-rename-button";
-  renameButton.setAttribute("aria-label", `${record.name} 이름 바꾸기`);
-  renameButton.title = "이름 바꾸기";
-  renameButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m13.5 3.5 3 3L7 16H4v-3l9.5-9.5Z" /></svg>';
-  renameButton.addEventListener("click", () => openRenameDocumentDialog(record));
-
   const shareButton = document.createElement("button");
   shareButton.type = "button";
   shareButton.className = "document-share-button";
-  const isShared = sharedTo.length > 0 || Boolean(workspace?.isSharedDocument(record));
-  shareButton.classList.toggle("is-shared", isShared);
+  shareButton.classList.toggle("is-shared", Boolean(workspace?.isSharedDocument(record)));
   shareButton.setAttribute("aria-label", `${record.name} 팀에 공유`);
-  shareButton.title = isShared ? `공유됨${sharedTo.length ? `: ${sharedTo.join(", ")}` : ""} · 다른 워크스페이스에도 공유` : "팀 워크스페이스에 공유";
+  shareButton.title = workspace?.isSharedDocument(record) ? "팀에 공유됨 · 다시 공유" : "팀 워크스페이스에 공유";
   shareButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="10" r="2.5" /><circle cx="14.5" cy="5" r="2.5" /><circle cx="14.5" cy="15" r="2.5" /><path d="m8.2 8.8 4-2.5M8.2 11.2l4 2.5" /></svg>';
   shareButton.addEventListener("click", () => workspace?.openShareDialog(record));
 
-  row.append(selectButton, renameButton, shareButton, deleteButton);
+  row.append(selectButton, shareButton, deleteButton);
   return row;
 }
 
@@ -812,7 +778,6 @@ function renderPreview(record, focusSourceId = null) {
   previewBadge.textContent = typeInfo.label;
   previewBadge.title = "브라우저에 저장된 파일";
   previewFileName.textContent = record.name;
-  previewFileName.title = record.originalName && record.originalName !== record.name ? `원본 파일: ${record.originalName}` : record.name;
   previewFileType.textContent = typeInfo.label;
   previewFileIcon.className = `mini-file-icon mini-file-icon-${record.type}`;
   previewMeta.replaceChildren();
@@ -1097,7 +1062,7 @@ function renderAiSummary(record) {
     ? "요약 중"
     : error
       ? "다시 시도"
-      : summary && record?.extrasRevealed
+      : summary
         ? "다시 요약"
         : "AI 요약";
   aiSummaryLoading.hidden = !isLoading;
@@ -1160,6 +1125,71 @@ function getCombinedVisualSpec(record) {
   };
 }
 
+function waitForAiJobPoll(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    let timer;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      cleanup();
+      reject(signal.reason);
+    };
+    timer = window.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+async function requestAiSummaryJob(record) {
+  const signal = AbortSignal.timeout(AI_JOB_CLIENT_TIMEOUT_MS);
+  const submission = await fetch("/api/ai-summarize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document: createAiSourcePayload(record) }),
+    signal,
+  });
+  let submissionResult;
+  try {
+    submissionResult = await submission.json();
+  } catch {
+    throw new Error(AI_RETRY_MESSAGE);
+  }
+
+  if (submission.status !== 202) return { response: submission, result: submissionResult };
+  const jobId = submissionResult.jobId;
+  if (typeof jobId !== "string" || !jobId) throw new Error(AI_RETRY_MESSAGE);
+
+  let pollAfterMs = Number(submissionResult.pollAfterMs) || 750;
+  while (true) {
+    await waitForAiJobPoll(Math.min(5000, Math.max(300, pollAfterMs)), signal);
+    const response = await fetch(`/api/ai-summarize/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      cache: "no-store",
+      signal,
+    });
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error(AI_RETRY_MESSAGE);
+    }
+    if (response.status !== 202) {
+      if (response.status === 404 && result.code === "AI_JOB_NOT_FOUND") {
+        throw new Error("분석 작업이 만료되었어요. 다시 분석해 주세요.");
+      }
+      return { response, result };
+    }
+    pollAfterMs = Number(result.pollAfterMs) || pollAfterMs;
+  }
+}
+
 async function runAiSummary(record) {
   if (!record || aiLoadingDocuments.has(record.id)) return;
 
@@ -1168,19 +1198,7 @@ async function runAiSummary(record) {
   renderAiSummary(record);
 
   try {
-    const response = await fetch("/api/ai-summarize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ document: createAiSourcePayload(record) }),
-      signal: AbortSignal.timeout(150000),
-    });
-
-    let result;
-    try {
-      result = await response.json();
-    } catch {
-      throw new Error(AI_RETRY_MESSAGE);
-    }
+    const { response, result } = await requestAiSummaryJob(record);
 
     if (!response.ok) {
       if (result.code === "AI_RESPONSE_INVALID") {
@@ -1203,7 +1221,7 @@ async function runAiSummary(record) {
     aiErrors.delete(record.id);
     if (selectedDocumentId === record.id) {
       renderAiSummary(record);
-      renderExtraInsights(record);
+      renderSelectedVisuals(record);
     }
   } catch (error) {
     const message = error.name === "AbortError" || error.name === "TimeoutError"
@@ -1221,81 +1239,6 @@ async function runAiSummary(record) {
   }
 }
 
-// 질문 밖 정보(자동 그래프·AI 요약)는 'AI 요약'을 눌렀을 때만 보여 준다.
-function normalizeVisualKey(id) {
-  return String(id || "").replace(/^question-/, "").replace(/^auto-/, "").replace(/^sheet-\d+-/, "");
-}
-
-function getQuestionResult(record) {
-  if (!record?.question) return null;
-  return answerQuestion(record, record.question);
-}
-
-function getExtraSpec(record, questionResult) {
-  const combined = record.aiSummary ? getCombinedVisualSpec(record) : record.visualSpec || { status: "ok", message: "", visuals: [] };
-  const shown = new Set((questionResult?.visualIds || []).map(normalizeVisualKey).filter((key) => key !== "line"));
-  return {
-    ...combined,
-    message: record.type === "pdf" && !record.aiSummary ? "" : combined.message,
-    visuals: (combined.visuals || []).filter((visual) => !shown.has(normalizeVisualKey(visual.id))),
-  };
-}
-
-// 화면에 보이는 그래프(질문 답 + 펼친 부가 정보). 인사이트 저장 후보로 쓴다.
-function getDisplayedSpec(record) {
-  const questionResult = getQuestionResult(record);
-  const visuals = [...(questionResult?.spec.visuals || [])];
-  if (record.extrasRevealed) visuals.push(...getExtraSpec(record, questionResult).visuals);
-  return { status: "ok", message: "", visuals };
-}
-
-function renderQuestionBar(record) {
-  questionForm.hidden = !record;
-  if (!record) return;
-  if (document.activeElement !== questionInput) questionInput.value = record.question || "";
-  questionSuggestions.replaceChildren();
-  const suggestions = suggestQuestions(record);
-  questionInput.placeholder = suggestions[0] ? `예) ${suggestions[0]}` : "궁금한 점을 적어 주세요";
-  suggestions.forEach((text) => {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "question-chip";
-    chip.textContent = text;
-    chip.addEventListener("click", () => submitQuestion(record, text));
-    questionSuggestions.append(chip);
-  });
-}
-
-function renderQuestionAnswer(record, questionResult) {
-  questionAnswer.hidden = !questionResult || questionResult.status === "empty";
-  questionAnswerSentences.replaceChildren();
-  if (questionAnswer.hidden) return;
-  questionAnswerTitle.textContent = `“${questionResult.question}”`;
-  questionResult.sentences.forEach((sentence) => {
-    const item = document.createElement("li");
-    item.className = `question-answer-item level-${sentence.level}`;
-    item.textContent = sentence.text;
-    questionAnswerSentences.append(item);
-  });
-  questionAnswer.classList.toggle("is-unanswered", questionResult.status !== "answered");
-}
-
-async function submitQuestion(record, text) {
-  if (!record) return;
-  const question = String(text || "").trim().slice(0, 200);
-  record.question = question;
-  questionInput.value = question;
-  try {
-    await saveDocument(record);
-  } catch {
-    // 저장에 실패해도 이번 화면에는 답을 보여 준다.
-  }
-  if (selectedDocumentId === record.id) {
-    renderSelectedVisuals(record);
-    if (question) questionAnswer.scrollIntoView({ block: "start", behavior: "smooth" });
-  }
-}
-
 function renderSelectedVisuals(record) {
   const fallbackSpec = {
     status: "ok",
@@ -1304,10 +1247,6 @@ function renderSelectedVisuals(record) {
   };
   if (!record) {
     renderVisuals(fallbackSpec, { container: visualizationOutput });
-    renderVisuals({ status: "ok", message: "", visuals: [] }, { container: extraVisualizationOutput });
-    extraInsights.hidden = true;
-    renderQuestionBar(null);
-    renderQuestionAnswer(null, null);
     if (saveInsightButton) saveInsightButton.disabled = true;
     renderAiSummary(null);
     renderDriverPanel(null);
@@ -1315,41 +1254,25 @@ function renderSelectedVisuals(record) {
     return;
   }
 
-  const onNavigate = (sourceId) => selectDocument(record.id, sourceId);
-  const questionResult = getQuestionResult(record);
-  renderQuestionBar(record);
-  renderQuestionAnswer(record, questionResult);
-  renderAiSummary(record);
-  if (saveInsightButton) saveInsightButton.disabled = false;
-
-  const mainSpec = questionResult
-    ? questionResult.spec
-    : {
+  const spec = record.aiSummary
+    ? getCombinedVisualSpec(record)
+    : record.visualSpec || {
       status: "ok",
-      message: record.extrasRevealed
-        ? "궁금한 점을 질문창에 적으면, 그 답에 맞는 그래프를 여기에 먼저 보여 드려요."
-        : "미리보기의 질문창에 궁금한 점을 적으면 그 답에 맞는 그래프만 보여 드려요. 파일 전체에서 얻을 수 있는 부가 정보는 ‘AI 요약’을 누르면 볼 수 있어요.",
+      message: record.type === "pdf"
+        ? "AI 요약 연결 후 시각화가 표시됩니다"
+        : "시각화 명세를 준비하지 못했습니다. 다시 계산해 주세요.",
       visuals: [],
     };
-  renderVisuals(mainSpec, { container: visualizationOutput, sourceDocument: record, onNavigate });
-  if (questionResult && questionResult.spec.visuals.length === 0) visualizationOutput.replaceChildren();
 
-  renderExtraInsights(record, questionResult);
-}
-
-// 'AI 요약'으로 펼친 부가 정보만 다시 그린다. 위의 질문 답은 건드리지 않아 자리가 바뀌지 않는다.
-function renderExtraInsights(record, questionResult = getQuestionResult(record)) {
-  const onNavigate = (sourceId) => selectDocument(record.id, sourceId);
-  extraInsights.hidden = !record.extrasRevealed;
-  if (record.extrasRevealed) {
-    renderVisuals(getExtraSpec(record, questionResult), { container: extraVisualizationOutput, sourceDocument: record, onNavigate });
-    renderHandoverPanel(record, { onNavigate });
-    renderDriverPanel(record, { onNavigate });
-  } else {
-    renderVisuals({ status: "ok", message: "", visuals: [] }, { container: extraVisualizationOutput });
-    renderHandoverPanel(null);
-    renderDriverPanel(null);
-  }
+  renderAiSummary(record);
+  if (saveInsightButton) saveInsightButton.disabled = false;
+  renderVisuals(spec, {
+    container: visualizationOutput,
+    sourceDocument: record,
+    onNavigate: (sourceId) => selectDocument(record.id, sourceId),
+  });
+  renderHandoverPanel(record, { onNavigate: (sourceId) => selectDocument(record.id, sourceId) });
+  renderDriverPanel(record, { onNavigate: (sourceId) => selectDocument(record.id, sourceId) });
 }
 
 function selectDocument(id, sourceId = null) {
@@ -1360,47 +1283,6 @@ function selectDocument(id, sourceId = null) {
   renderDocuments();
   renderPreview(record, sourceId);
   if (selectionChanged) renderSelectedVisuals(record);
-}
-
-// 앱 안에서 보이는 문서 이름만 바꾼다. 처음 바꿀 때 원래 파일 이름을 originalName에 남긴다.
-let pendingRenameDocumentId = null;
-
-function openRenameDocumentDialog(record) {
-  if (!record || renameDocumentDialog.open) return;
-  pendingRenameDocumentId = record.id;
-  renameDocumentForm.reset();
-  const error = renameDocumentForm.querySelector(".form-error");
-  error.hidden = true;
-  error.textContent = "";
-  renameDocumentOriginal.textContent = record.originalName || record.name;
-  renameDocumentReset.hidden = !record.originalName || record.originalName === record.name;
-  renameDocumentForm.elements.name.value = record.name;
-  renameDocumentDialog.showModal();
-  renameDocumentForm.elements.name.select();
-}
-
-async function renameDocument(id, nextName) {
-  const record = documents.find((item) => item.id === id);
-  if (!record) return;
-  const name = String(nextName || "").replace(/\s+/g, " ").trim().slice(0, 80);
-  if (!name) throw new Error("이름을 입력해 주세요.");
-  const previous = { name: record.name, originalName: record.originalName };
-  if (!record.originalName) record.originalName = record.name;
-  record.name = name;
-  if (record.originalName === name) delete record.originalName;
-  try {
-    await saveDocument(record);
-  } catch {
-    record.name = previous.name;
-    if (previous.originalName) record.originalName = previous.originalName;
-    else delete record.originalName;
-    throw new Error("이름을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.");
-  }
-  searchCache.delete(record.id);
-  renderDocuments();
-  if (selectedDocumentId === record.id) renderPreview(record);
-  workspace?.refreshView();
-  showToast(`문서 이름을 “${name}”(으)로 바꿨어요.`);
 }
 
 function openDeleteDocumentDialog(record) {
@@ -1604,27 +1486,6 @@ document.querySelector("#view-all").addEventListener("click", () => {
   renderDocuments();
 });
 
-renameDocumentForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const error = renameDocumentForm.querySelector(".form-error");
-  try {
-    await renameDocument(pendingRenameDocumentId, renameDocumentForm.elements.name.value);
-    renameDocumentDialog.close();
-  } catch (failure) {
-    error.textContent = failure.message;
-    error.hidden = false;
-  }
-});
-renameDocumentReset.addEventListener("click", () => {
-  const record = documents.find((item) => item.id === pendingRenameDocumentId);
-  if (record?.originalName) renameDocumentForm.elements.name.value = record.originalName;
-});
-renameDocumentDialog.addEventListener("close", () => {
-  pendingRenameDocumentId = null;
-});
-previewRenameButton.addEventListener("click", () => {
-  openRenameDocumentDialog(documents.find((item) => item.id === selectedDocumentId));
-});
 cancelDeleteDocumentButton.addEventListener("click", () => {
   if (isDeletingDocument) return;
   deleteDocumentDialog.close();
@@ -1655,29 +1516,9 @@ confirmDeleteDocumentButton.addEventListener("click", async () => {
 });
 
 loadSampleSpecButton.addEventListener("click", loadSampleVisualization);
-aiSummarizeButton.addEventListener("click", async () => {
+aiSummarizeButton.addEventListener("click", () => {
   const record = documents.find((item) => item.id === selectedDocumentId);
-  if (!record) return;
-  // 처음 누르면 질문 밖 부가 정보를 펼치고, 아직 AI 요약이 없으면 요약도 요청한다. 펼친 뒤 다시 누르면 다시 요약한다.
-  if (!record.extrasRevealed) {
-    record.extrasRevealed = true;
-    try {
-      await saveDocument(record);
-    } catch {
-      // 펼친 상태 저장에 실패해도 이번 화면에는 보여 준다.
-    }
-    renderAiSummary(record);
-    renderExtraInsights(record);
-    // 질문한 답은 위에 그대로 두고 화면도 옮기지 않는다. 부가 정보는 그 아래에 펼친다.
-    showToast(record.question ? "질문 답은 위에 그대로 두고, 아래에 부가 정보를 펼쳤어요." : "아래에 부가 정보를 펼쳤어요.");
-    if (record.aiSummary) return;
-  }
   runAiSummary(record);
-});
-questionForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const record = documents.find((item) => item.id === selectedDocumentId);
-  submitQuestion(record, questionInput.value);
 });
 aiSummaryRetryButton.addEventListener("click", () => {
   const record = documents.find((item) => item.id === selectedDocumentId);
@@ -1715,11 +1556,10 @@ window.grappler = {
 // 저장된(또는 팀에서 받은) 문서를 화면에 쓰기 전에 시각화 명세와 AI 결과를 다시 확인한다.
 function prepareStoredRecord(record) {
   let needsSave = false;
-  if (!Object.hasOwn(record, "visualSpec") || (record.type !== "pdf" && record.visualSpecVersion !== VISUAL_SPEC_VERSION)) {
+  if (!Object.hasOwn(record, "visualSpec")) {
     record.visualSpec = record.type === "pdf"
       ? { status: "ok", message: "AI 요약 연결 후 시각화가 표시됩니다", visuals: [] }
       : buildSpreadsheetVisualizationSpec(record);
-    record.visualSpecVersion = VISUAL_SPEC_VERSION;
     needsSave = true;
   }
 
@@ -1821,7 +1661,7 @@ function startWorkspace(user) {
     showToast,
     getDocuments: () => documents,
     getSelectedDocument: () => documents.find((item) => item.id === selectedDocumentId) || null,
-    getVisualSpec: (record) => getDisplayedSpec(record),
+    getVisualSpec: (record) => (record.aiSummary ? getCombinedVisualSpec(record) : record.visualSpec),
     importDocument: importSharedDocument,
     openDocument: (id) => {
       if (selectedDocumentId === id) {
