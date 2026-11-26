@@ -19,11 +19,12 @@
 - 내 문서 보관함은 지금처럼 브라우저(IndexedDB)에 저장되고, 계정별로 분리돼요. 로그인 기능 이전에 저장한 문서는 그 브라우저에서 처음 로그인한 계정으로 옮겨져요.
 
 ## 서버 저장 위치
-- 계정·세션: `<데이터 폴더>/users.json`
-- 워크스페이스·멤버·인사이트: `<데이터 폴더>/workspaces.json`
-- 공유 문서 본문: `<데이터 폴더>/shared/<id>.json`
-- 데이터 폴더는 기본 `.data/`(git 제외), 환경변수 `GRAPPLER_DATA_DIR`로 바꿀 수 있어요.
-- **배포 환경 주의:** 서버를 다시 배포할 때 파일이 지워지는 환경이면 계정과 공유 데이터도 사라져요. 유지되는 디스크(볼륨) 경로를 `GRAPPLER_DATA_DIR`로 지정해 주세요.
+- 계정·로그인 세션·팀·멤버·공유 문서·인사이트는 SQLite 파일 하나에 저장돼요: 기본 `.data/grappler.sqlite`.
+- 데이터 폴더는 `GRAPPLER_DATA_DIR`, DB 파일 위치는 `GRAPPLER_DB_PATH` 환경변수로 바꿀 수 있어요.
+- 이전 버전의 `users.json`, `workspaces.json`, `shared/`가 있으면 첫 시작 때 SQLite로 한 번 가져오고, 원본은 자동 삭제하지 않아요.
+- 배포 환경에서 파일이 지워지면 DB도 사라지므로, 영구 볼륨을 연결하고 `GRAPPLER_DATA_DIR` 또는 `GRAPPLER_DB_PATH`를 그 경로로 지정해 주세요.
+- 여러 서버 인스턴스가 동시에 같은 데이터를 써야 한다면 네트워크 데이터베이스(PostgreSQL 등)를 사용해야 해요. SQLite는 한 서버와 공유 파일 볼륨에 적합해요.
+- DB 백업 및 이전 설정은 [SQLite 저장소 안내](./database.md)를 참고해 주세요.
 
 ## API 요약
 - `POST /api/auth/signup` `{ name, username, password }` · `POST /api/auth/login` `{ username, password }` · `POST /api/auth/logout` · `GET/PATCH /api/auth/me`

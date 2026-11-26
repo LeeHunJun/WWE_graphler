@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { AiServiceError, requestAiSummary } from "./ai-service.js";
 import { handleAuthApi, isAuthApiPath } from "./auth-api.js";
 import { createAuthStore } from "./auth-store.js";
+import { openDatabase } from "./database.js";
 import { handleWorkspaceApi, isWorkspaceApiPath } from "./workspace-api.js";
 import { createWorkspaceStore } from "./workspace-store.js";
 
@@ -14,10 +15,9 @@ const DIST = path.join(ROOT, "dist");
 const DIAGNOSTIC_LOG = path.join(ROOT, ".opencode", "ai-response-diagnostics.jsonl");
 const DIAGNOSTIC_LOG_LIMIT = 4 * 1024 * 1024;
 const BODY_LIMIT = 16 * 1024 * 1024;
-// 계정·로그인과 팀 워크스페이스(공유 문서·저장한 인사이트·팀 설정)는 서버의 JSON 파일에 저장한다.
-const WORKSPACE_DATA_DIR = process.env.GRAPPLER_DATA_DIR || path.join(ROOT, ".data");
-const workspaceStore = createWorkspaceStore({ dataDir: WORKSPACE_DATA_DIR });
-const authStore = createAuthStore({ dataDir: WORKSPACE_DATA_DIR });
+let database;
+let workspaceStore;
+let authStore;
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
@@ -33,6 +33,7 @@ const MIME_TYPES = {
 
 const isProduction = process.argv.includes("--production") || process.env.NODE_ENV === "production";
 let vite;
+let viteModule;
 let localEnv = {};
 
 async function readJsonBody(request) {
@@ -175,6 +176,17 @@ async function main() {
   const portArgument = process.argv.indexOf("--port");
   const port = Number(process.env.PORT || (portArgument >= 0 ? process.argv[portArgument + 1] : 3000));
 
+  if (!isProduction) {
+    viteModule = await import("vite");
+    localEnv = viteModule.loadEnv("development", ROOT, ["LLM_API_KEY", "LLM_BASE_URL", "GRAPPLER_DATA_DIR", "GRAPPLER_DB_PATH"]);
+  }
+  // 개발 때는 .env.local 설정도 읽고, 배포 때는 플랫폼 환경변수를 사용한다.
+  const dataDir = path.resolve(process.env.GRAPPLER_DATA_DIR || localEnv.GRAPPLER_DATA_DIR || path.join(ROOT, ".data"));
+  const databasePath = path.resolve(process.env.GRAPPLER_DB_PATH || localEnv.GRAPPLER_DB_PATH || path.join(dataDir, "grappler.sqlite"));
+  database = await openDatabase({ dataDir, databasePath });
+  workspaceStore = createWorkspaceStore({ database });
+  authStore = createAuthStore({ database });
+
   const server = createHttpServer(async (request, response) => {
     const requestPath = new URL(request.url, "http://localhost").pathname;
     if (requestPath === "/api/ai-summarize") {
@@ -201,9 +213,7 @@ async function main() {
   });
 
   if (!isProduction) {
-    const { createServer, loadEnv } = await import("vite");
-    localEnv = loadEnv("development", ROOT, ["LLM_API_KEY", "LLM_BASE_URL"]);
-    vite = await createServer({
+    vite = await viteModule.createServer({
       root: ROOT,
       appType: "spa",
       server: {

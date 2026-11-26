@@ -10,6 +10,7 @@
     "test": "node --test"
   },
   "dependencies": {
+    "better-sqlite3": "^13.2.0",
     "chart.js": "^4.6.1",
     "pdfjs-dist": "^6.5.438",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"

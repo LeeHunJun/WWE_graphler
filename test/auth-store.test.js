@@ -1,29 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAuthStore } from "../auth-store.js";
+import { openDatabase } from "../database.js";
 
 async function withStore(run) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-auth-"));
+  const database = await openDatabase({ dataDir });
   try {
-    await run(createAuthStore({ dataDir }), dataDir);
+    await run(createAuthStore({ database }), dataDir, database);
   } finally {
+    database.close();
     await rm(dataDir, { recursive: true, force: true });
   }
 }
 
 test("아이디·비밀번호로 가입하고 로그인한다", async () => {
-  await withStore(async (store, dataDir) => {
+  await withStore(async (store, _dataDir, database) => {
     const { user, session } = await store.signup({ name: "김지은", username: "Jieun_01", password: "secret1" });
     assert.equal(user.username, "jieun_01");
     assert.equal(user.passwordHash, undefined);
     assert.deepEqual(await store.getUserBySession(session.token), user);
 
-    const saved = await readFile(path.join(dataDir, "users.json"), "utf8");
-    assert.ok(!saved.includes("secret1"), "비밀번호 원문은 저장하지 않는다");
-    assert.ok(!saved.includes(session.token), "세션 토큰 원문은 저장하지 않는다");
+    const savedUser = database.prepare("SELECT password_hash FROM users WHERE id = ?").get(user.id);
+    const savedSession = database.prepare("SELECT token_hash FROM sessions WHERE user_id = ?").get(user.id);
+    assert.ok(!savedUser.password_hash.includes("secret1"), "비밀번호 원문은 저장하지 않는다");
+    assert.notEqual(savedSession.token_hash, session.token, "세션 토큰 원문은 저장하지 않는다");
 
     const login = await store.login({ username: "JIEUN_01", password: "secret1" });
     assert.equal(login.user.id, user.id);
@@ -33,13 +37,14 @@ test("아이디·비밀번호로 가입하고 로그인한다", async () => {
 });
 
 test("게스트는 저장 계정 없이 임시 세션을 받고 로그아웃하면 세션이 폐기된다", async () => {
-  await withStore(async (store, dataDir) => {
+  await withStore(async (store, _dataDir, database) => {
     const { user, session } = store.createGuestSession({ clientKey: "guest-test" });
     assert.equal(user.isGuest, true);
     assert.equal(user.name, "게스트");
     assert.match(user.id, /^guest-/);
     assert.deepEqual(await store.getUserBySession(session.token), user);
-    await assert.rejects(readFile(path.join(dataDir, "users.json")), { code: "ENOENT" });
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM users").get().count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sessions WHERE guest_user_json IS NOT NULL").get().count, 1);
 
     await store.logout(session.token);
     assert.equal(await store.getUserBySession(session.token), null);

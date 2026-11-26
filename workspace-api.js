@@ -63,6 +63,13 @@ export async function handleWorkspaceApi(request, response, { workspaceStore: st
       }
     }
 
+    if (workspaceId && collection !== "join") {
+      const memberships = await store.listWorkspaces(actorId);
+      if (!memberships.some((workspace) => workspace.id === workspaceId)) {
+        throw new WorkspaceError(403, "NOT_A_MEMBER", "이 워크스페이스의 멤버만 내용을 볼 수 있어요.");
+      }
+    }
+
     if (!workspaceId) {
       if (method === "GET") return send(response, 200, { workspaces: await store.ensureDefaultMembership(actor) });
       if (method === "POST") {

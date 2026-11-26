@@ -4,17 +4,18 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
+import { openDatabase } from "../database.js";
 import { handleWorkspaceApi } from "../workspace-api.js";
 import { createWorkspaceStore } from "../workspace-store.js";
 
 const guest = { id: "guest-user-test-1234", name: "게스트", username: "guest_test", isGuest: true };
 
-function createRequest(url, { method = "GET", body = "" } = {}) {
+function createRequest(url, { method = "GET", body = "", cookie = "grappler_session=guest-token" } = {}) {
   const request = Readable.from(body ? [Buffer.from(body)] : []);
   Object.assign(request, {
     url,
     method,
-    headers: { cookie: "grappler_session=guest-token", host: "localhost", origin: "http://localhost" },
+    headers: { cookie, host: "localhost", origin: "http://localhost" },
     socket: { remoteAddress: "127.0.0.1" },
   });
   return request;
@@ -43,8 +44,9 @@ async function requestWorkspace(url, options, context) {
 
 test("게스트는 자기 체험 공간만 보고 다른 팀 참여·생성은 할 수 없습니다", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-guest-api-"));
+  const database = await openDatabase({ dataDir });
   try {
-    const workspaceStore = createWorkspaceStore({ dataDir });
+    const workspaceStore = createWorkspaceStore({ database });
     const authStore = { getUserBySession: async (token) => (token === "guest-token" ? guest : null) };
     const context = { workspaceStore, authStore };
     const home = await requestWorkspace("/api/workspaces", {}, context);
@@ -68,6 +70,29 @@ test("게스트는 자기 체험 공간만 보고 다른 팀 참여·생성은 �
     const create = await requestWorkspace("/api/workspaces", { method: "POST", body: "{}" }, context);
     assert.equal(create.status, 403);
   } finally {
+    database.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("로그인 계정도 멤버가 아닌 팀의 공유 자료를 읽을 수 없습니다", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-workspace-private-"));
+  const database = await openDatabase({ dataDir });
+  try {
+    const workspaceStore = createWorkspaceStore({ database });
+    const stranger = { id: "user-stranger-123", name: "외부 사용자", username: "stranger_1" };
+    const authStore = { getUserBySession: async (token) => (token === "stranger-token" ? stranger : null) };
+    const response = createResponse();
+    await handleWorkspaceApi(
+      createRequest("/api/workspaces/ws-product-team/shared-documents", { cookie: "grappler_session=stranger-token" }),
+      response,
+      { workspaceStore, authStore },
+    );
+
+    assert.equal(response.status, 403);
+    assert.equal(JSON.parse(response.body).code, "NOT_A_MEMBER");
+  } finally {
+    database.close();
     await rm(dataDir, { recursive: true, force: true });
   }
 });

@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { handleAuthApi } from "../auth-api.js";
 import { createAuthStore } from "../auth-store.js";
+import { openDatabase } from "../database.js";
 import { createWorkspaceStore } from "../workspace-store.js";
 
 function createRequest(url, { method = "GET", body = "", cookie = "" } = {}) {
@@ -42,9 +43,10 @@ async function requestAuth(url, options, context) {
 
 test("게스트 API는 짧은 HttpOnly 세션을 발급하고 로그아웃 시 체험 공간을 삭제합니다", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-guest-auth-"));
+  const database = await openDatabase({ dataDir });
   try {
-    const authStore = createAuthStore({ dataDir });
-    const workspaceStore = createWorkspaceStore({ dataDir });
+    const authStore = createAuthStore({ database });
+    const workspaceStore = createWorkspaceStore({ database });
     const context = { authStore, workspaceStore };
     const login = await requestAuth("/api/auth/guest", { method: "POST", body: "{}" }, context);
 
@@ -67,6 +69,7 @@ test("게스트 API는 짧은 HttpOnly 세션을 발급하고 로그아웃 시 �
     assert.equal(await authStore.getUserBySession(token), null);
     assert.deepEqual(await workspaceStore.listWorkspaces(login.json.user.id), []);
   } finally {
+    database.close();
     await rm(dataDir, { recursive: true, force: true });
   }
 });

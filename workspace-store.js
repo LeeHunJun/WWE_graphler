@@ -1,8 +1,6 @@
-// 팀 워크스페이스 저장소: 서버의 JSON 파일 하나(workspaces.json)와
-// 공유 문서 본문 파일(shared/<id>.json)에 저장한다. 별도 DB 없이 동작한다.
+// 계정, 팀 멤버십, 공유 문서와 인사이트를 공용 SQLite 데이터베이스에 저장한다.
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { withTransaction } from "./database.js";
 
 export const ROLES = Object.freeze(["owner", "editor", "viewer"]);
 export const ROLE_LABELS = Object.freeze({ owner: "관리자", editor: "편집자", viewer: "보기 전용" });
@@ -47,31 +45,16 @@ function cleanMultiline(value, maxLength, label) {
 
 function cleanId(value, label = "사용자") {
   const id = typeof value === "string" ? value.trim() : "";
-  if (!/^[A-Za-z0-9_-]{6,64}$/.test(id)) throw new WorkspaceError(400, "INVALID_ACTOR", `${label} 정보가 올바르지 않습니다.`);
+  if (!/^[A-Za-z0-9_-]{6,128}$/.test(id)) throw new WorkspaceError(400, "INVALID_ACTOR", `${label} 정보가 올바르지 않습니다.`);
   return id;
 }
 
-function createEmptyState() {
-  return { version: 1, workspaces: [] };
-}
-
-function seedState() {
-  const now = Date.now();
-  return {
-    version: 1,
-    workspaces: [{
-      id: "ws-product-team",
-      name: "프로덕트 팀",
-      description: "업무 자료와 시각화 인사이트를 함께 보는 기본 워크스페이스예요.",
-      color: "forest",
-      createdAt: now,
-      updatedAt: now,
-      settings: { allowEditorShare: true, allowViewerInsights: true },
-      members: [],
-      sharedDocuments: [],
-      insights: [],
-    }],
-  };
+function parseJson(value, fallback) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 function summarizeRecord(record) {
@@ -96,9 +79,39 @@ function validateRecord(record) {
     throw new WorkspaceError(400, "INVALID_DOCUMENT", "표 내용이 없습니다.");
   }
   const name = cleanText(record.name, 200, { required: true, label: "문서 이름" });
-  // 브라우저 전용 값(File 객체 등)은 저장하지 않는다.
   const { file, ...rest } = record;
   return { ...rest, name };
+}
+
+function mapMember(row) {
+  return { id: row.member_id, name: row.name, username: row.username, role: row.role, joinedAt: row.joined_at };
+}
+
+function mapSharedDocument(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    size: row.size,
+    summary: row.summary,
+    hasAiSummary: Boolean(row.has_ai_summary),
+    originId: row.origin_id,
+    note: row.note,
+    sharedBy: { id: row.shared_by_id, name: row.shared_by_name },
+    sharedAt: row.shared_at,
+  };
+}
+
+function mapInsight(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    note: row.note,
+    document: parseJson(row.document_json, {}),
+    items: parseJson(row.items_json, []),
+    savedBy: { id: row.saved_by_id, name: row.saved_by_name },
+    savedAt: row.saved_at,
+  };
 }
 
 function publicWorkspace(workspace) {
@@ -116,58 +129,53 @@ function publicWorkspace(workspace) {
   };
 }
 
-export function createWorkspaceStore({ dataDir, seed = true } = {}) {
-  if (!dataDir) throw new Error("dataDir is required");
-  const statePath = path.join(dataDir, "workspaces.json");
-  const sharedDir = path.join(dataDir, "shared");
-  let state = null;
-  let queue = Promise.resolve();
+export function createWorkspaceStore({ database, seed = true } = {}) {
+  if (!database) throw new Error("database is required");
 
-  async function load() {
-    if (!state) {
-      try {
-        const parsed = JSON.parse(await readFile(statePath, "utf8"));
-        state = parsed && Array.isArray(parsed.workspaces) ? parsed : createEmptyState();
-      } catch (error) {
-        if (error.code !== "ENOENT") throw new WorkspaceError(500, "STORE_UNREADABLE", "워크스페이스 저장 파일을 읽지 못했습니다.");
-        state = seed ? seedState() : createEmptyState();
-      }
-    }
-    await pruneExpiredGuestWorkspaces(state);
-    return state;
+  const statements = {
+    workspace: database.prepare("SELECT * FROM workspaces WHERE id = ?"),
+    workspaces: database.prepare("SELECT id FROM workspaces ORDER BY created_at, id"),
+    members: database.prepare("SELECT * FROM workspace_members WHERE workspace_id = ? ORDER BY joined_at, member_id"),
+    member: database.prepare("SELECT * FROM workspace_members WHERE workspace_id = ? AND member_id = ?"),
+    sharedDocuments: database.prepare("SELECT * FROM shared_documents WHERE workspace_id = ? ORDER BY shared_at DESC, id"),
+    sharedDocument: database.prepare("SELECT * FROM shared_documents WHERE workspace_id = ? AND id = ?"),
+    insights: database.prepare("SELECT * FROM insights WHERE workspace_id = ? ORDER BY saved_at DESC, id"),
+    insight: database.prepare("SELECT * FROM insights WHERE workspace_id = ? AND id = ?"),
+  };
+
+  function pruneExpiredGuestWorkspaces() {
+    database.prepare("DELETE FROM workspaces WHERE guest_owner_id IS NOT NULL AND guest_expires_at <= ?").run(Date.now());
   }
 
-  async function persist() {
-    await mkdir(dataDir, { recursive: true });
-    const temporaryPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(temporaryPath, JSON.stringify(state, null, 2), "utf8");
-    await rename(temporaryPath, statePath);
+  function getWorkspaceRecord(workspaceId) {
+    const row = statements.workspace.get(workspaceId);
+    if (!row) throw new WorkspaceError(404, "WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없어요.");
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      color: row.color,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      settings: parseJson(row.settings_json, { allowEditorShare: true, allowViewerInsights: true }),
+      guestOwnerId: row.guest_owner_id,
+      guestExpiresAt: row.guest_expires_at,
+      members: statements.members.all(workspaceId).map(mapMember),
+      sharedDocuments: statements.sharedDocuments.all(workspaceId).map(mapSharedDocument),
+      insights: statements.insights.all(workspaceId).map(mapInsight),
+    };
   }
 
-  // 모든 변경은 한 번에 하나씩 처리해 JSON 파일이 꼬이지 않게 한다.
-  function serialize(task) {
-    const run = queue.then(task, task);
-    queue = run.catch(() => {});
-    return run;
+  function getWorkspaceCount() {
+    return Number(database.prepare("SELECT COUNT(*) AS count FROM workspaces").get().count);
   }
 
-  function mutate(task) {
-    return serialize(async () => {
-      await load();
-      const result = await task(state);
-      await persist();
-      return result;
-    });
-  }
-
-  function findWorkspace(current, workspaceId) {
-    const workspace = current.workspaces.find((item) => item.id === workspaceId);
-    if (!workspace) throw new WorkspaceError(404, "WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없어요.");
-    return workspace;
+  function findMember(workspace, memberId) {
+    return workspace.members.find((member) => member.id === memberId);
   }
 
   function requireMember(workspace, actorId, allowedRoles = ROLES) {
-    const member = workspace.members.find((item) => item.id === actorId);
+    const member = findMember(workspace, actorId);
     if (!member) throw new WorkspaceError(403, "NOT_A_MEMBER", "이 워크스페이스의 멤버가 아니에요.");
     if (!allowedRoles.includes(member.role)) {
       throw new WorkspaceError(403, "FORBIDDEN", `${allowedRoles.map((role) => ROLE_LABELS[role]).join("·")}만 할 수 있어요.`);
@@ -175,145 +183,169 @@ export function createWorkspaceStore({ dataDir, seed = true } = {}) {
     return member;
   }
 
-  function sharedPath(documentId) {
-    return path.join(sharedDir, `${cleanId(documentId, "문서")}.json`);
+  function insertMember(workspaceId, member) {
+    database.prepare(`
+      INSERT INTO workspace_members (workspace_id, member_id, name, username, role, joined_at)
+      VALUES (@workspaceId, @memberId, @name, @username, @role, @joinedAt)
+    `).run({
+      workspaceId,
+      memberId: member.id,
+      name: member.name,
+      username: member.username || "",
+      role: member.role,
+      joinedAt: member.joinedAt,
+    });
   }
 
-  async function pruneExpiredGuestWorkspaces(current) {
+  function insertDefaultWorkspace() {
     const now = Date.now();
-    const expired = current.workspaces.filter((workspace) => workspace.guestOwnerId && workspace.guestExpiresAt <= now);
-    if (expired.length === 0) return;
-    const expiredIds = new Set(expired.map((workspace) => workspace.id));
-    current.workspaces = current.workspaces.filter((workspace) => !expiredIds.has(workspace.id));
-    await Promise.all(expired.flatMap((workspace) => workspace.sharedDocuments.map((item) => rm(sharedPath(item.id), { force: true }))));
-    await persist();
+    database.prepare(`
+      INSERT INTO workspaces (id, name, description, color, created_at, updated_at, settings_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "ws-product-team",
+      "프로덕트 팀",
+      "업무 자료와 시각화 인사이트를 함께 보는 기본 워크스페이스예요.",
+      "forest",
+      now,
+      now,
+      JSON.stringify({ allowEditorShare: true, allowViewerInsights: true }),
+    );
+  }
+
+  pruneExpiredGuestWorkspaces();
+  if (seed) {
+    withTransaction(database, () => {
+      pruneExpiredGuestWorkspaces();
+      if (getWorkspaceCount() === 0) insertDefaultWorkspace();
+    });
   }
 
   function createGuestWorkspace(actor) {
-    return mutate((current) => {
-      const actorId = cleanId(actor?.id);
-      const existing = current.workspaces.find((workspace) => workspace.guestOwnerId === actorId);
-      if (existing) return publicWorkspace(existing);
-      if (current.workspaces.length >= LIMITS.workspaces) {
+    const actorId = cleanId(actor?.id);
+    const now = Date.now();
+    const id = `ws-${randomUUID()}`;
+    const guestExpiresAt = Number.isFinite(actor?.guestExpiresAt) ? actor.guestExpiresAt : now + GUEST_WORKSPACE_TTL;
+    return withTransaction(database, () => {
+      pruneExpiredGuestWorkspaces();
+      const existingRow = database.prepare("SELECT id FROM workspaces WHERE guest_owner_id = ?").get(actorId);
+      if (existingRow) return publicWorkspace(getWorkspaceRecord(existingRow.id));
+      if (getWorkspaceCount() >= LIMITS.workspaces) {
         throw new WorkspaceError(400, "LIMIT_REACHED", "워크스페이스를 더 만들 수 없어요.");
       }
+      database.prepare(`
+        INSERT INTO workspaces (
+          id, name, description, color, created_at, updated_at, settings_json, guest_owner_id, guest_expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        "게스트 개인 공간",
+        "12시간 동안 사용할 수 있는 비공개 체험 공간이에요.",
+        "forest",
+        now,
+        now,
+        JSON.stringify({ allowEditorShare: true, allowViewerInsights: true }),
+        actorId,
+        guestExpiresAt,
+      );
+      insertMember(id, {
+        id: actorId,
+        name: cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" }),
+        username: cleanText(actor?.username, LIMITS.username, { label: "아이디" }),
+        role: "owner",
+        joinedAt: now,
+      });
+      return publicWorkspace(getWorkspaceRecord(id));
+    });
+  }
+
+  return {
+    async listWorkspaces(actorId) {
+      pruneExpiredGuestWorkspaces();
+      const ids = actorId === undefined
+        ? statements.workspaces.all().map((row) => row.id)
+        : database.prepare(`
+          SELECT w.id FROM workspaces AS w
+          INNER JOIN workspace_members AS m ON m.workspace_id = w.id
+          WHERE m.member_id = ? ORDER BY w.created_at, w.id
+        `).all(actorId).map((row) => row.id);
+      return ids.map((id) => publicWorkspace(getWorkspaceRecord(id)));
+    },
+
+    async ensureDefaultMembership(actor) {
+      pruneExpiredGuestWorkspaces();
+      if (actor?.isGuest) return [createGuestWorkspace(actor)];
+      const mine = await this.listWorkspaces(actor.id);
+      if (mine.length > 0) return mine;
+      const target = database.prepare("SELECT id FROM workspaces WHERE id = ?").get("ws-product-team")
+        || statements.workspaces.get();
+      if (!target) return [];
+      return [await this.joinWorkspace(target.id, { actor })];
+    },
+
+    async deleteGuestWorkspaces(actorId) {
+      const ownerId = cleanId(actorId);
+      const result = withTransaction(database, () => database.prepare("DELETE FROM workspaces WHERE guest_owner_id = ?").run(ownerId));
+      return { count: result.changes };
+    },
+
+    async getWorkspace(workspaceId) {
+      pruneExpiredGuestWorkspaces();
+      return publicWorkspace(getWorkspaceRecord(workspaceId));
+    },
+
+    async createWorkspace({ actor, name, description, color }) {
+      pruneExpiredGuestWorkspaces();
+      const actorId = cleanId(actor?.id);
+      const cleanName = cleanText(name, LIMITS.workspaceName, { required: true, label: "워크스페이스 이름" });
+      const cleanDescription = cleanText(description, LIMITS.description, { label: "설명" });
       const now = Date.now();
-      const workspace = {
-        id: `ws-${randomUUID()}`,
-        name: "게스트 개인 공간",
-        description: "12시간 동안 사용할 수 있는 비공개 체험 공간이에요.",
-        color: "forest",
-        createdAt: now,
-        updatedAt: now,
-        settings: { allowEditorShare: true, allowViewerInsights: true },
-        members: [{
+      const id = `ws-${randomUUID()}`;
+      return withTransaction(database, () => {
+        pruneExpiredGuestWorkspaces();
+        if (getWorkspaceCount() >= LIMITS.workspaces) {
+          throw new WorkspaceError(400, "LIMIT_REACHED", "워크스페이스를 더 만들 수 없어요.");
+        }
+        const selectedColor = WORKSPACE_COLORS.includes(color) ? color : WORKSPACE_COLORS[getWorkspaceCount() % WORKSPACE_COLORS.length];
+        database.prepare(`
+          INSERT INTO workspaces (id, name, description, color, created_at, updated_at, settings_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(id, cleanName, cleanDescription, selectedColor, now, now, JSON.stringify({ allowEditorShare: true, allowViewerInsights: true }));
+        insertMember(id, {
           id: actorId,
           name: cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" }),
           username: cleanText(actor?.username, LIMITS.username, { label: "아이디" }),
           role: "owner",
           joinedAt: now,
-        }],
-        sharedDocuments: [],
-        insights: [],
-        guestOwnerId: actorId,
-        guestExpiresAt: now + GUEST_WORKSPACE_TTL,
-      };
-      current.workspaces.push(workspace);
-      return publicWorkspace(workspace);
-    });
-  }
-
-  return {
-    // 내가 멤버인 워크스페이스만 보여준다. 다른 워크스페이스는 초대 링크로 참여한다.
-    async listWorkspaces(actorId) {
-      const current = await serialize(load);
-      const visible = actorId === undefined
-        ? current.workspaces
-        : current.workspaces.filter((workspace) => workspace.members.some((member) => member.id === actorId));
-      return visible.map(publicWorkspace);
-    },
-
-    // 처음 로그인해 속한 워크스페이스가 없으면 기본 워크스페이스에 참여시킨다.
-    async ensureDefaultMembership(actor) {
-      if (actor?.isGuest) return [await createGuestWorkspace(actor)];
-      const mine = await this.listWorkspaces(actor.id);
-      if (mine.length > 0) return mine;
-      const current = await serialize(load);
-      const target = current.workspaces.find((workspace) => workspace.id === "ws-product-team") || current.workspaces[0];
-      if (!target) return [];
-      return [await this.joinWorkspace(target.id, { actor })];
-    },
-
-    deleteGuestWorkspaces(actorId) {
-      return mutate(async (current) => {
-        const ownerId = cleanId(actorId);
-        const removed = current.workspaces.filter((workspace) => workspace.guestOwnerId === ownerId);
-        if (removed.length === 0) return { count: 0 };
-        const removedIds = new Set(removed.map((workspace) => workspace.id));
-        current.workspaces = current.workspaces.filter((workspace) => !removedIds.has(workspace.id));
-        await Promise.all(removed.flatMap((workspace) => workspace.sharedDocuments.map((item) => rm(sharedPath(item.id), { force: true }))));
-        return { count: removed.length };
+        });
+        return publicWorkspace(getWorkspaceRecord(id));
       });
     },
 
-    async getWorkspace(workspaceId) {
-      const current = await serialize(load);
-      return publicWorkspace(findWorkspace(current, workspaceId));
-    },
-
-    createWorkspace({ actor, name, description, color }) {
-      return mutate((current) => {
-        if (current.workspaces.length >= LIMITS.workspaces) {
-          throw new WorkspaceError(400, "LIMIT_REACHED", "워크스페이스를 더 만들 수 없어요.");
-        }
-        const actorId = cleanId(actor?.id);
-        const now = Date.now();
-        const workspace = {
-          id: `ws-${randomUUID()}`,
-          name: cleanText(name, LIMITS.workspaceName, { required: true, label: "워크스페이스 이름" }),
-          description: cleanText(description, LIMITS.description, { label: "설명" }),
-          color: WORKSPACE_COLORS.includes(color) ? color : WORKSPACE_COLORS[current.workspaces.length % WORKSPACE_COLORS.length],
-          createdAt: now,
-          updatedAt: now,
-          settings: { allowEditorShare: true, allowViewerInsights: true },
-          members: [{
-            id: actorId,
-            name: cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" }),
-            username: cleanText(actor?.username, LIMITS.username, { label: "아이디" }),
-            role: "owner",
-            joinedAt: now,
-          }],
-          sharedDocuments: [],
-          insights: [],
-        };
-        current.workspaces.push(workspace);
-        return publicWorkspace(workspace);
-      });
-    },
-
-    joinWorkspace(workspaceId, { actor }) {
-      return mutate((current) => {
-        const workspace = findWorkspace(current, workspaceId);
-        const actorId = cleanId(actor?.id);
-        const name = cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" });
-        const username = cleanText(actor?.username, LIMITS.username, { label: "아이디" });
-        const existing = workspace.members.find((member) => member.id === actorId);
+    async joinWorkspace(workspaceId, { actor }) {
+      pruneExpiredGuestWorkspaces();
+      const actorId = cleanId(actor?.id);
+      const name = cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" });
+      const username = cleanText(actor?.username, LIMITS.username, { label: "아이디" });
+      withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
+        const existing = findMember(workspace, actorId);
         if (existing) {
-          existing.name = name;
-          existing.username = username;
+          database.prepare("UPDATE workspace_members SET name = ?, username = ? WHERE workspace_id = ? AND member_id = ?")
+            .run(name, username, workspaceId, actorId);
         } else {
           if (workspace.members.length >= LIMITS.members) throw new WorkspaceError(400, "LIMIT_REACHED", "멤버 수 한도에 도달했어요.");
-          // 아무도 없는 워크스페이스에 처음 들어온 사람이 관리자가 된다.
-          workspace.members.push({ id: actorId, name, username, role: workspace.members.length === 0 ? "owner" : "editor", joinedAt: Date.now() });
+          insertMember(workspaceId, { id: actorId, name, username, role: workspace.members.length === 0 ? "owner" : "editor", joinedAt: Date.now() });
         }
-        workspace.updatedAt = Date.now();
-        return publicWorkspace(workspace);
+        database.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").run(Date.now(), workspaceId);
       });
+      return publicWorkspace(getWorkspaceRecord(workspaceId));
     },
 
-    updateWorkspace(workspaceId, { actorId, name, description, color, settings }) {
-      return mutate((current) => {
-        const workspace = findWorkspace(current, workspaceId);
+    async updateWorkspace(workspaceId, { actorId, name, description, color, settings }) {
+      pruneExpiredGuestWorkspaces();
+      withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
         requireMember(workspace, actorId, ["owner"]);
         if (name !== undefined) workspace.name = cleanText(name, LIMITS.workspaceName, { required: true, label: "워크스페이스 이름" });
         if (description !== undefined) workspace.description = cleanText(description, LIMITS.description, { label: "설명" });
@@ -325,77 +357,77 @@ export function createWorkspaceStore({ dataDir, seed = true } = {}) {
           if (typeof settings.allowEditorShare === "boolean") workspace.settings.allowEditorShare = settings.allowEditorShare;
           if (typeof settings.allowViewerInsights === "boolean") workspace.settings.allowViewerInsights = settings.allowViewerInsights;
         }
-        workspace.updatedAt = Date.now();
-        return publicWorkspace(workspace);
+        database.prepare(`
+          UPDATE workspaces SET name = ?, description = ?, color = ?, settings_json = ?, updated_at = ? WHERE id = ?
+        `).run(workspace.name, workspace.description, workspace.color, JSON.stringify(workspace.settings), Date.now(), workspaceId);
       });
+      return publicWorkspace(getWorkspaceRecord(workspaceId));
     },
 
-    deleteWorkspace(workspaceId, { actorId }) {
-      return mutate(async (current) => {
-        const workspace = findWorkspace(current, workspaceId);
+    async deleteWorkspace(workspaceId, { actorId }) {
+      pruneExpiredGuestWorkspaces();
+      return withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
         requireMember(workspace, actorId, ["owner"]);
-        if (current.workspaces.length <= 1) throw new WorkspaceError(400, "LAST_WORKSPACE", "마지막 워크스페이스는 삭제할 수 없어요.");
-        current.workspaces = current.workspaces.filter((item) => item.id !== workspaceId);
-        await Promise.all(workspace.sharedDocuments.map((item) => rm(sharedPath(item.id), { force: true })));
+        if (getWorkspaceCount() <= 1) throw new WorkspaceError(400, "LAST_WORKSPACE", "마지막 워크스페이스는 삭제할 수 없어요.");
+        database.prepare("DELETE FROM workspaces WHERE id = ?").run(workspaceId);
         return { id: workspaceId };
       });
     },
 
-    updateMember(workspaceId, memberId, { actorId, role }) {
-      return mutate((current) => {
-        const workspace = findWorkspace(current, workspaceId);
+    async updateMember(workspaceId, memberId, { actorId, role }) {
+      pruneExpiredGuestWorkspaces();
+      withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
         requireMember(workspace, actorId, ["owner"]);
         if (!ROLES.includes(role)) throw new WorkspaceError(400, "INVALID_INPUT", "지원하지 않는 역할이에요.");
-        const member = workspace.members.find((item) => item.id === memberId);
+        const member = findMember(workspace, memberId);
         if (!member) throw new WorkspaceError(404, "MEMBER_NOT_FOUND", "멤버를 찾을 수 없어요.");
         const owners = workspace.members.filter((item) => item.role === "owner");
         if (member.role === "owner" && role !== "owner" && owners.length <= 1) {
           throw new WorkspaceError(400, "LAST_OWNER", "관리자가 최소 한 명은 있어야 해요.");
         }
-        member.role = role;
-        workspace.updatedAt = Date.now();
-        return publicWorkspace(workspace);
+        database.prepare("UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND member_id = ?").run(role, workspaceId, memberId);
+        database.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").run(Date.now(), workspaceId);
       });
+      return publicWorkspace(getWorkspaceRecord(workspaceId));
     },
 
-    removeMember(workspaceId, memberId, { actorId }) {
-      return mutate((current) => {
-        const workspace = findWorkspace(current, workspaceId);
-        // 본인은 스스로 나갈 수 있고, 다른 멤버는 관리자만 내보낼 수 있다.
+    async removeMember(workspaceId, memberId, { actorId }) {
+      pruneExpiredGuestWorkspaces();
+      withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
         requireMember(workspace, actorId, actorId === memberId ? ROLES : ["owner"]);
-        const member = workspace.members.find((item) => item.id === memberId);
+        const member = findMember(workspace, memberId);
         if (!member) throw new WorkspaceError(404, "MEMBER_NOT_FOUND", "멤버를 찾을 수 없어요.");
         const owners = workspace.members.filter((item) => item.role === "owner");
         if (member.role === "owner" && owners.length <= 1) {
           throw new WorkspaceError(400, "LAST_OWNER", "마지막 관리자는 나갈 수 없어요. 다른 멤버를 관리자로 지정해 주세요.");
         }
-        workspace.members = workspace.members.filter((item) => item.id !== memberId);
-        workspace.updatedAt = Date.now();
-        return publicWorkspace(workspace);
+        database.prepare("DELETE FROM workspace_members WHERE workspace_id = ? AND member_id = ?").run(workspaceId, memberId);
+        database.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").run(Date.now(), workspaceId);
       });
+      return publicWorkspace(getWorkspaceRecord(workspaceId));
     },
 
-    // 계정 프로필(이름·아이디)이 바뀌면 모든 워크스페이스의 멤버 정보에도 반영한다.
-    syncMemberProfile(user) {
-      return mutate((current) => {
-        for (const workspace of current.workspaces) {
-          const member = workspace.members.find((item) => item.id === user.id);
-          if (member) {
-            member.name = cleanText(user.name, LIMITS.memberName, { required: true, label: "이름" });
-            member.username = cleanText(user.username, LIMITS.username, { label: "아이디" });
-          }
-        }
+    async syncMemberProfile(user) {
+      const name = cleanText(user.name, LIMITS.memberName, { required: true, label: "이름" });
+      const username = cleanText(user.username, LIMITS.username, { label: "아이디" });
+      withTransaction(database, () => {
+        database.prepare("UPDATE workspace_members SET name = ?, username = ? WHERE member_id = ?").run(name, username, user.id);
       });
     },
 
     async listSharedDocuments(workspaceId) {
-      const current = await serialize(load);
-      return [...findWorkspace(current, workspaceId).sharedDocuments].sort((a, b) => b.sharedAt - a.sharedAt);
+      pruneExpiredGuestWorkspaces();
+      getWorkspaceRecord(workspaceId);
+      return statements.sharedDocuments.all(workspaceId).map(mapSharedDocument);
     },
 
-    shareDocument(workspaceId, { actorId, note, record }) {
-      return mutate(async (current) => {
-        const workspace = findWorkspace(current, workspaceId);
+    async shareDocument(workspaceId, { actorId, note, record }) {
+      pruneExpiredGuestWorkspaces();
+      return withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
         const member = requireMember(workspace, actorId, workspace.settings.allowEditorShare ? ["owner", "editor"] : ["owner"]);
         if (workspace.sharedDocuments.length >= LIMITS.sharedDocuments) {
           throw new WorkspaceError(400, "LIMIT_REACHED", "공유 문서 수 한도에 도달했어요.");
@@ -414,52 +446,68 @@ export function createWorkspaceStore({ dataDir, seed = true } = {}) {
           sharedBy: { id: member.id, name: member.name },
           sharedAt: Date.now(),
         };
-        await mkdir(sharedDir, { recursive: true });
-        await writeFile(sharedPath(id), JSON.stringify({ ...cleanRecord, id }), "utf8");
-        workspace.sharedDocuments.push(entry);
-        workspace.updatedAt = Date.now();
+        database.prepare(`
+          INSERT INTO shared_documents (
+            id, workspace_id, name, type, size, summary, has_ai_summary, origin_id, note,
+            shared_by_id, shared_by_name, shared_at, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          id,
+          workspaceId,
+          entry.name,
+          entry.type,
+          entry.size,
+          entry.summary,
+          entry.hasAiSummary ? 1 : 0,
+          entry.originId,
+          entry.note,
+          entry.sharedBy.id,
+          entry.sharedBy.name,
+          entry.sharedAt,
+          JSON.stringify({ ...cleanRecord, id }),
+        );
+        database.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").run(Date.now(), workspaceId);
         return entry;
       });
     },
 
     async getSharedDocument(workspaceId, documentId, { actorId }) {
-      const current = await serialize(load);
-      const workspace = findWorkspace(current, workspaceId);
+      pruneExpiredGuestWorkspaces();
+      const workspace = getWorkspaceRecord(workspaceId);
       requireMember(workspace, actorId);
-      const entry = workspace.sharedDocuments.find((item) => item.id === documentId);
-      if (!entry) throw new WorkspaceError(404, "DOCUMENT_NOT_FOUND", "공유 문서를 찾을 수 없어요.");
-      try {
-        const record = JSON.parse(await readFile(sharedPath(documentId), "utf8"));
-        return { entry, record };
-      } catch {
-        throw new WorkspaceError(404, "DOCUMENT_NOT_FOUND", "공유 문서 내용을 찾을 수 없어요.");
-      }
+      const row = statements.sharedDocument.get(workspaceId, documentId);
+      if (!row || !row.record_json) throw new WorkspaceError(404, "DOCUMENT_NOT_FOUND", "공유 문서 내용을 찾을 수 없어요.");
+      const record = parseJson(row.record_json, null);
+      if (!record) throw new WorkspaceError(404, "DOCUMENT_NOT_FOUND", "공유 문서 내용을 찾을 수 없어요.");
+      return { entry: mapSharedDocument(row), record };
     },
 
-    unshareDocument(workspaceId, documentId, { actorId }) {
-      return mutate(async (current) => {
-        const workspace = findWorkspace(current, workspaceId);
+    async unshareDocument(workspaceId, documentId, { actorId }) {
+      pruneExpiredGuestWorkspaces();
+      return withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
         const member = requireMember(workspace, actorId);
-        const entry = workspace.sharedDocuments.find((item) => item.id === documentId);
+        const entry = statements.sharedDocument.get(workspaceId, documentId);
         if (!entry) throw new WorkspaceError(404, "DOCUMENT_NOT_FOUND", "공유 문서를 찾을 수 없어요.");
-        if (member.role !== "owner" && entry.sharedBy.id !== member.id) {
+        if (member.role !== "owner" && entry.shared_by_id !== member.id) {
           throw new WorkspaceError(403, "FORBIDDEN", "공유한 사람이나 관리자만 공유를 해제할 수 있어요.");
         }
-        workspace.sharedDocuments = workspace.sharedDocuments.filter((item) => item.id !== documentId);
-        await rm(sharedPath(documentId), { force: true });
-        workspace.updatedAt = Date.now();
+        database.prepare("DELETE FROM shared_documents WHERE workspace_id = ? AND id = ?").run(workspaceId, documentId);
+        database.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").run(Date.now(), workspaceId);
         return { id: documentId };
       });
     },
 
     async listInsights(workspaceId) {
-      const current = await serialize(load);
-      return [...findWorkspace(current, workspaceId).insights].sort((a, b) => b.savedAt - a.savedAt);
+      pruneExpiredGuestWorkspaces();
+      getWorkspaceRecord(workspaceId);
+      return statements.insights.all(workspaceId).map(mapInsight);
     },
 
-    saveInsight(workspaceId, { actorId, title, note, document: source, items }) {
-      return mutate((current) => {
-        const workspace = findWorkspace(current, workspaceId);
+    async saveInsight(workspaceId, { actorId, title, note, document: source, items }) {
+      pruneExpiredGuestWorkspaces();
+      return withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
         const member = requireMember(workspace, actorId, workspace.settings.allowViewerInsights ? ROLES : ["owner", "editor"]);
         if (workspace.insights.length >= LIMITS.insights) throw new WorkspaceError(400, "LIMIT_REACHED", "인사이트 저장 한도에 도달했어요.");
         if (!Array.isArray(items) || items.length === 0) throw new WorkspaceError(400, "INVALID_INPUT", "저장할 인사이트를 하나 이상 골라 주세요.");
@@ -484,23 +532,37 @@ export function createWorkspaceStore({ dataDir, seed = true } = {}) {
           savedBy: { id: member.id, name: member.name },
           savedAt: Date.now(),
         };
-        workspace.insights.push(insight);
-        workspace.updatedAt = Date.now();
+        database.prepare(`
+          INSERT INTO insights (id, workspace_id, title, note, document_json, items_json, saved_by_id, saved_by_name, saved_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          insight.id,
+          workspaceId,
+          insight.title,
+          insight.note,
+          JSON.stringify(insight.document),
+          JSON.stringify(insight.items),
+          insight.savedBy.id,
+          insight.savedBy.name,
+          insight.savedAt,
+        );
+        database.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").run(Date.now(), workspaceId);
         return insight;
       });
     },
 
-    deleteInsight(workspaceId, insightId, { actorId }) {
-      return mutate((current) => {
-        const workspace = findWorkspace(current, workspaceId);
+    async deleteInsight(workspaceId, insightId, { actorId }) {
+      pruneExpiredGuestWorkspaces();
+      return withTransaction(database, () => {
+        const workspace = getWorkspaceRecord(workspaceId);
         const member = requireMember(workspace, actorId);
-        const insight = workspace.insights.find((item) => item.id === insightId);
-        if (!insight) throw new WorkspaceError(404, "INSIGHT_NOT_FOUND", "인사이트를 찾을 수 없어요.");
-        if (member.role !== "owner" && insight.savedBy.id !== member.id) {
+        const row = statements.insight.get(workspaceId, insightId);
+        if (!row) throw new WorkspaceError(404, "INSIGHT_NOT_FOUND", "인사이트를 찾을 수 없어요.");
+        if (member.role !== "owner" && row.saved_by_id !== member.id) {
           throw new WorkspaceError(403, "FORBIDDEN", "저장한 사람이나 관리자만 삭제할 수 있어요.");
         }
-        workspace.insights = workspace.insights.filter((item) => item.id !== insightId);
-        workspace.updatedAt = Date.now();
+        database.prepare("DELETE FROM insights WHERE workspace_id = ? AND id = ?").run(workspaceId, insightId);
+        database.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").run(Date.now(), workspaceId);
         return { id: insightId };
       });
     },

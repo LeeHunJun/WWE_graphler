@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { openDatabase } from "../database.js";
 import { createWorkspaceStore } from "../workspace-store.js";
 
 async function withStore(run) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-ws-"));
+  const database = await openDatabase({ dataDir });
   try {
-    await run(createWorkspaceStore({ dataDir }), dataDir);
+    await run(createWorkspaceStore({ database }), dataDir, database);
   } finally {
+    database.close();
     await rm(dataDir, { recursive: true, force: true });
   }
 }
@@ -63,8 +66,8 @@ test("마지막 관리자는 강등하거나 내보낼 수 없다", async () => 
   });
 });
 
-test("문서를 공유하고 다시 읽으며, File 객체는 저장하지 않는다", async () => {
-  await withStore(async (store, dataDir) => {
+test("문서를 공유하고 다시 읽으며, 본문과 인덱스를 SQLite에 저장한다", async () => {
+  await withStore(async (store, _dataDir, database) => {
     const [workspace] = await store.listWorkspaces();
     await store.joinWorkspace(workspace.id, { actor: alice });
     await store.joinWorkspace(workspace.id, { actor: bob });
@@ -80,12 +83,12 @@ test("문서를 공유하고 다시 읽으며, File 객체는 저장하지 않�
     await assert.rejects(store.getSharedDocument(workspace.id, entry.id, { actorId: "user-stranger" }), { code: "NOT_A_MEMBER" });
     await assert.rejects(store.unshareDocument(workspace.id, entry.id, { actorId: bob.id }), { code: "FORBIDDEN" });
     await store.unshareDocument(workspace.id, entry.id, { actorId: alice.id });
-    assert.deepEqual(await readdir(path.join(dataDir, "shared")), []);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM shared_documents").get().count, 0);
   });
 });
 
-test("인사이트를 저장하고 지우며, 데이터는 파일로 남는다", async () => {
-  await withStore(async (store, dataDir) => {
+test("인사이트를 저장하고 지우며, DB를 다시 열어도 내용이 유지된다", async () => {
+  await withStore(async (store, _dataDir, database) => {
     const [workspace] = await store.listWorkspaces();
     await store.joinWorkspace(workspace.id, { actor: alice });
     await assert.rejects(store.saveInsight(workspace.id, { actorId: alice.id, title: "빈 인사이트", items: [] }), { code: "INVALID_INPUT" });
@@ -98,7 +101,7 @@ test("인사이트를 저장하고 지우며, 데이터는 파일로 남는다",
     assert.equal(insight.items[1].kind, "caption");
     assert.equal(insight.items[1].level, "info");
 
-    const reopened = createWorkspaceStore({ dataDir });
+    const reopened = createWorkspaceStore({ database });
     const saved = await reopened.listInsights(workspace.id);
     assert.equal(saved.length, 1);
     assert.equal(saved[0].savedBy.name, "앨리스");
@@ -131,7 +134,7 @@ test("내가 속한 워크스페이스만 보이고, 처음엔 기본 워크스�
 });
 
 test("게스트마다 비공개 체험 공간을 만들고 로그아웃 정리 시 서버 자료를 지운다", async () => {
-  await withStore(async (store, dataDir) => {
+  await withStore(async (store, _dataDir, database) => {
     const guestA = { id: "guest-user-aaaaaa", name: "게스트", username: "guest_aaaa", isGuest: true };
     const guestB = { id: "guest-user-bbbbbb", name: "게스트", username: "guest_bbbb", isGuest: true };
     const [spaceA] = await store.ensureDefaultMembership(guestA);
@@ -147,7 +150,7 @@ test("게스트마다 비공개 체험 공간을 만들고 로그아웃 정리 �
     const shared = await store.shareDocument(spaceA.id, { actorId: guestA.id, record: csvRecord });
     assert.equal((await store.deleteGuestWorkspaces(guestA.id)).count, 1);
     assert.deepEqual(await store.listWorkspaces(guestA.id), []);
-    assert.deepEqual(await readdir(path.join(dataDir, "shared")), []);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM shared_documents WHERE workspace_id = ?").get(spaceA.id).count, 0);
     assert.ok((await store.listWorkspaces(guestB.id)).some((workspace) => workspace.id === spaceB.id));
     assert.ok(shared.id);
   });
