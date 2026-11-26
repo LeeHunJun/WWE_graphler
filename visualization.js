@@ -2,6 +2,7 @@ import Chart from "chart.js/auto";
 import { parseNumber, parseTemporal } from "./value-parsing.js";
 import { INSIGHT_LEVEL_LABELS, sortInsightsByPriority } from "./insight-priority.js";
 import { explainHighlight } from "./highlight-explain.js";
+import { analyzeDrivers, buildDriverVisualSpec } from "./driver-analysis.js";
 
 export { parseTemporal };
 
@@ -34,12 +35,19 @@ function getColumnUnit(header) {
   return match?.[1]?.trim() || match?.[2]?.trim() || "";
 }
 
+// 0/1, 1·2·3 같은 숫자 열은 머리글이 날짜·기간을 뜻할 때만 시간 축으로 본다(예: 생존 0/1을 연도로 오인하지 않게).
+const TEMPORAL_HEADER_HINT = /날짜|일자|월|기간|연도|년|date|month|period|year|quarter|분기|주차|week/i;
+
 function getAxisColumn(rows, columnCount) {
   for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
     const values = rows.slice(1).map((row) => String(row[columnIndex] ?? "").trim()).filter(Boolean);
     if (values.length === 0) continue;
 
-    if (values.every((value) => parseTemporal(value) !== null)) return { index: columnIndex, temporal: true };
+    const header = String(rows[0]?.[columnIndex] ?? "").trim();
+    const allNumeric = values.every((value) => parseNumber(value) !== null);
+    if (values.every((value) => parseTemporal(value) !== null) && (!allNumeric || TEMPORAL_HEADER_HINT.test(header))) {
+      return { index: columnIndex, temporal: true };
+    }
     if (values.some((value) => parseNumber(value) === null)) return { index: columnIndex, temporal: false };
   }
 
@@ -316,6 +324,36 @@ function createAutoVisual(sheet, sheetIndex, axis, numericColumns) {
   });
 }
 
+// 기록형 표(승객·고객 목록처럼 같은 항목 값이 여러 행에 반복되는 표)는 행마다 선을 긋지 않고 요인 비교 그래프로 보여 준다.
+function isRecordTable(sheet, axis) {
+  if (axis.temporal) return false;
+  const labels = sheet.rows.slice(1).map((row) => String(row[axis.index] ?? "").trim()).filter(Boolean);
+  return labels.length >= 20 && new Set(labels).size < labels.length * 0.5;
+}
+
+function createRecordVisuals(record, sheetIndex) {
+  try {
+    const result = analyzeDrivers(record, { sheetIndex });
+    if (result?.status !== "ok") return [];
+    return buildDriverVisualSpec(result, record).visuals.map((visual) => ({ ...visual, id: `auto-sheet-${sheetIndex}-${visual.id}` }));
+  } catch {
+    return [];
+  }
+}
+
+// 질문에 답할 때 쓰는, 고른 숫자 열만 담은 그래프(시간 축이면 선, 아니면 막대).
+export function buildColumnVisuals(record, sheetIndex, columnIndexes) {
+  const sheet = record?.sheets?.[sheetIndex];
+  if (!sheet || !Array.isArray(sheet.rows) || sheet.rows.length < 2) return [];
+  const axis = getAxisColumn(sheet.rows, sheet.columnCount);
+  if (!axis) return [];
+  const wanted = new Set(columnIndexes);
+  const columns = getNumericColumns(sheet, axis.index).filter((column) => wanted.has(column.index));
+  if (columns.length === 0) return [];
+  return createAutoVisual(sheet, sheetIndex, axis, columns.slice(0, 4))
+    .map((visual) => ({ ...visual, id: visual.id.replace(/^auto-/, "question-") }));
+}
+
 export function buildSpreadsheetVisualizationSpec(record) {
   const visuals = [];
   let hasNumericColumn = false;
@@ -327,6 +365,13 @@ export function buildSpreadsheetVisualizationSpec(record) {
     const numericColumns = getNumericColumns(sheet, axis.index);
     if (numericColumns.length === 0) return;
     hasNumericColumn = true;
+    if (isRecordTable(sheet, axis)) {
+      const recordVisuals = createRecordVisuals(record, sheetIndex);
+      if (recordVisuals.length > 0) {
+        visuals.push(...recordVisuals);
+        return;
+      }
+    }
     visuals.push(...createAutoVisual(sheet, sheetIndex, axis, numericColumns));
   });
 

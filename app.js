@@ -4,6 +4,7 @@ import { validateAiQuality } from "./ai-quality.js";
 import { renderDriverPanel } from "./driver-view.js";
 import { renderHandoverPanel } from "./handover-view.js";
 import { initWorkspace } from "./workspace.js";
+import { answerQuestion, suggestQuestions } from "./question-answer.js";
 import { ensureSignedIn, signOut, updateProfile } from "./auth.js";
 
 const LEGACY_DATABASE_NAME = "grappler-local-documents";
@@ -18,6 +19,8 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const SAMPLE_DOCUMENT_ID = "grappler-sample-work-report";
 const UNREADABLE_MESSAGE = "파일의 내용을 읽을 수 없습니다. 파일을 확인한 후 다시 업로드해 주세요";
 const AI_RETRY_MESSAGE = "잠시 후 다시 시도해 주세요";
+// 자동 시각화 규칙이 바뀌면 올린다. 저장된 문서의 자동 그래프를 새 규칙으로 다시 만든다.
+const VISUAL_SPEC_VERSION = 2;
 const FILE_TYPES = {
   pdf: { label: "PDF", icon: "P", className: "pdf" },
   csv: { label: "CSV", icon: "C", className: "csv" },
@@ -45,6 +48,14 @@ const previewFileIcon = document.querySelector("#preview-file-icon");
 const previewMeta = document.querySelector("#preview-meta");
 const previewData = document.querySelector("#preview-data");
 const visualizationOutput = document.querySelector("#visualization-output");
+const questionForm = document.querySelector("#question-form");
+const questionInput = document.querySelector("#question-input");
+const questionSuggestions = document.querySelector("#question-suggestions");
+const questionAnswer = document.querySelector("#question-answer");
+const questionAnswerTitle = document.querySelector("#question-answer-title");
+const questionAnswerSentences = document.querySelector("#question-answer-sentences");
+const extraInsights = document.querySelector("#extra-insights");
+const extraVisualizationOutput = document.querySelector("#extra-visualization-output");
 const aiSummarizeButton = document.querySelector("#ai-summarize-button");
 const aiSummarizeLabel = document.querySelector("#ai-summarize-label");
 const aiSummaryCard = document.querySelector("#ai-summary-card");
@@ -446,6 +457,7 @@ async function extractDocument(file) {
     record.visualSpec = type === "pdf"
       ? { status: "ok", message: "AI 요약 연결 후 시각화가 표시됩니다", visuals: [] }
       : buildSpreadsheetVisualizationSpec(record);
+    record.visualSpecVersion = VISUAL_SPEC_VERSION;
     return record;
   } catch (error) {
     if (error instanceof FileProcessingError) throw error;
@@ -1070,7 +1082,7 @@ function renderAiSummary(record) {
     ? "요약 중"
     : error
       ? "다시 시도"
-      : summary
+      : summary && record?.extrasRevealed
         ? "다시 요약"
         : "AI 요약";
   aiSummaryLoading.hidden = !isLoading;
@@ -1194,6 +1206,81 @@ async function runAiSummary(record) {
   }
 }
 
+// 질문 밖 정보(자동 그래프·AI 요약)는 'AI 요약'을 눌렀을 때만 보여 준다.
+function normalizeVisualKey(id) {
+  return String(id || "").replace(/^question-/, "").replace(/^auto-/, "").replace(/^sheet-\d+-/, "");
+}
+
+function getQuestionResult(record) {
+  if (!record?.question) return null;
+  return answerQuestion(record, record.question);
+}
+
+function getExtraSpec(record, questionResult) {
+  const combined = record.aiSummary ? getCombinedVisualSpec(record) : record.visualSpec || { status: "ok", message: "", visuals: [] };
+  const shown = new Set((questionResult?.visualIds || []).map(normalizeVisualKey).filter((key) => key !== "line"));
+  return {
+    ...combined,
+    message: record.type === "pdf" && !record.aiSummary ? "" : combined.message,
+    visuals: (combined.visuals || []).filter((visual) => !shown.has(normalizeVisualKey(visual.id))),
+  };
+}
+
+// 화면에 보이는 그래프(질문 답 + 펼친 부가 정보). 인사이트 저장 후보로 쓴다.
+function getDisplayedSpec(record) {
+  const questionResult = getQuestionResult(record);
+  const visuals = [...(questionResult?.spec.visuals || [])];
+  if (record.extrasRevealed) visuals.push(...getExtraSpec(record, questionResult).visuals);
+  return { status: "ok", message: "", visuals };
+}
+
+function renderQuestionBar(record) {
+  questionForm.hidden = !record;
+  if (!record) return;
+  if (document.activeElement !== questionInput) questionInput.value = record.question || "";
+  questionSuggestions.replaceChildren();
+  const suggestions = suggestQuestions(record);
+  questionInput.placeholder = suggestions[0] ? `예) ${suggestions[0]}` : "궁금한 점을 적어 주세요";
+  suggestions.forEach((text) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "question-chip";
+    chip.textContent = text;
+    chip.addEventListener("click", () => submitQuestion(record, text));
+    questionSuggestions.append(chip);
+  });
+}
+
+function renderQuestionAnswer(record, questionResult) {
+  questionAnswer.hidden = !questionResult || questionResult.status === "empty";
+  questionAnswerSentences.replaceChildren();
+  if (questionAnswer.hidden) return;
+  questionAnswerTitle.textContent = `“${questionResult.question}”`;
+  questionResult.sentences.forEach((sentence) => {
+    const item = document.createElement("li");
+    item.className = `question-answer-item level-${sentence.level}`;
+    item.textContent = sentence.text;
+    questionAnswerSentences.append(item);
+  });
+  questionAnswer.classList.toggle("is-unanswered", questionResult.status !== "answered");
+}
+
+async function submitQuestion(record, text) {
+  if (!record) return;
+  const question = String(text || "").trim().slice(0, 200);
+  record.question = question;
+  questionInput.value = question;
+  try {
+    await saveDocument(record);
+  } catch {
+    // 저장에 실패해도 이번 화면에는 답을 보여 준다.
+  }
+  if (selectedDocumentId === record.id) {
+    renderSelectedVisuals(record);
+    if (question) questionAnswer.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+}
+
 function renderSelectedVisuals(record) {
   const fallbackSpec = {
     status: "ok",
@@ -1202,6 +1289,10 @@ function renderSelectedVisuals(record) {
   };
   if (!record) {
     renderVisuals(fallbackSpec, { container: visualizationOutput });
+    renderVisuals({ status: "ok", message: "", visuals: [] }, { container: extraVisualizationOutput });
+    extraInsights.hidden = true;
+    renderQuestionBar(null);
+    renderQuestionAnswer(null, null);
     if (saveInsightButton) saveInsightButton.disabled = true;
     renderAiSummary(null);
     renderDriverPanel(null);
@@ -1209,25 +1300,35 @@ function renderSelectedVisuals(record) {
     return;
   }
 
-  const spec = record.aiSummary
-    ? getCombinedVisualSpec(record)
-    : record.visualSpec || {
-      status: "ok",
-      message: record.type === "pdf"
-        ? "AI 요약 연결 후 시각화가 표시됩니다"
-        : "시각화 명세를 준비하지 못했습니다. 다시 계산해 주세요.",
-      visuals: [],
-    };
-
+  const onNavigate = (sourceId) => selectDocument(record.id, sourceId);
+  const questionResult = getQuestionResult(record);
+  renderQuestionBar(record);
+  renderQuestionAnswer(record, questionResult);
   renderAiSummary(record);
   if (saveInsightButton) saveInsightButton.disabled = false;
-  renderVisuals(spec, {
-    container: visualizationOutput,
-    sourceDocument: record,
-    onNavigate: (sourceId) => selectDocument(record.id, sourceId),
-  });
-  renderHandoverPanel(record, { onNavigate: (sourceId) => selectDocument(record.id, sourceId) });
-  renderDriverPanel(record, { onNavigate: (sourceId) => selectDocument(record.id, sourceId) });
+
+  const mainSpec = questionResult
+    ? questionResult.spec
+    : {
+      status: "ok",
+      message: record.extrasRevealed
+        ? "궁금한 점을 질문창에 적으면, 그 답에 맞는 그래프를 여기에 먼저 보여 드려요."
+        : "미리보기의 질문창에 궁금한 점을 적으면 그 답에 맞는 그래프만 보여 드려요. 파일 전체에서 얻을 수 있는 부가 정보는 ‘AI 요약’을 누르면 볼 수 있어요.",
+      visuals: [],
+    };
+  renderVisuals(mainSpec, { container: visualizationOutput, sourceDocument: record, onNavigate });
+  if (questionResult && questionResult.spec.visuals.length === 0) visualizationOutput.replaceChildren();
+
+  extraInsights.hidden = !record.extrasRevealed;
+  if (record.extrasRevealed) {
+    renderVisuals(getExtraSpec(record, questionResult), { container: extraVisualizationOutput, sourceDocument: record, onNavigate });
+    renderHandoverPanel(record, { onNavigate });
+    renderDriverPanel(record, { onNavigate });
+  } else {
+    renderVisuals({ status: "ok", message: "", visuals: [] }, { container: extraVisualizationOutput });
+    renderHandoverPanel(null);
+    renderDriverPanel(null);
+  }
 }
 
 function selectDocument(id, sourceId = null) {
@@ -1471,9 +1572,27 @@ confirmDeleteDocumentButton.addEventListener("click", async () => {
 });
 
 loadSampleSpecButton.addEventListener("click", loadSampleVisualization);
-aiSummarizeButton.addEventListener("click", () => {
+aiSummarizeButton.addEventListener("click", async () => {
   const record = documents.find((item) => item.id === selectedDocumentId);
+  if (!record) return;
+  // 처음 누르면 질문 밖 부가 정보를 펼치고, 아직 AI 요약이 없으면 요약도 요청한다. 펼친 뒤 다시 누르면 다시 요약한다.
+  if (!record.extrasRevealed) {
+    record.extrasRevealed = true;
+    try {
+      await saveDocument(record);
+    } catch {
+      // 펼친 상태 저장에 실패해도 이번 화면에는 보여 준다.
+    }
+    renderSelectedVisuals(record);
+    extraInsights.scrollIntoView({ block: "start", behavior: "smooth" });
+    if (record.aiSummary) return;
+  }
   runAiSummary(record);
+});
+questionForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const record = documents.find((item) => item.id === selectedDocumentId);
+  submitQuestion(record, questionInput.value);
 });
 aiSummaryRetryButton.addEventListener("click", () => {
   const record = documents.find((item) => item.id === selectedDocumentId);
@@ -1511,10 +1630,11 @@ window.grappler = {
 // 저장된(또는 팀에서 받은) 문서를 화면에 쓰기 전에 시각화 명세와 AI 결과를 다시 확인한다.
 function prepareStoredRecord(record) {
   let needsSave = false;
-  if (!Object.hasOwn(record, "visualSpec")) {
+  if (!Object.hasOwn(record, "visualSpec") || (record.type !== "pdf" && record.visualSpecVersion !== VISUAL_SPEC_VERSION)) {
     record.visualSpec = record.type === "pdf"
       ? { status: "ok", message: "AI 요약 연결 후 시각화가 표시됩니다", visuals: [] }
       : buildSpreadsheetVisualizationSpec(record);
+    record.visualSpecVersion = VISUAL_SPEC_VERSION;
     needsSave = true;
   }
 
@@ -1616,7 +1736,7 @@ function startWorkspace(user) {
     showToast,
     getDocuments: () => documents,
     getSelectedDocument: () => documents.find((item) => item.id === selectedDocumentId) || null,
-    getVisualSpec: (record) => (record.aiSummary ? getCombinedVisualSpec(record) : record.visualSpec),
+    getVisualSpec: (record) => getDisplayedSpec(record),
     importDocument: importSharedDocument,
     openDocument: (id) => {
       if (selectedDocumentId === id) {

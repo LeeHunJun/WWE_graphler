@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { explainHighlight } from "../highlight-explain.js";
-import { buildSpreadsheetVisualizationSpec } from "../visualization.js";
+import { buildColumnVisuals, buildSpreadsheetVisualizationSpec } from "../visualization.js";
 
 function loadCsvFixture(name) {
   const rows = readFileSync(new URL(`../public/test-fixtures/${name}`, import.meta.url), "utf8")
@@ -23,7 +23,7 @@ function texts(record, visual, highlight) {
 
 test("기록형 데이터는 계산식 대신 가장 큰 영향 요인을 문장으로 알려 준다", () => {
   const record = loadCsvFixture("titanic-style-survival.csv");
-  const [visual] = buildSpreadsheetVisualizationSpec(record).visuals;
+  const [visual] = buildColumnVisuals(record, 0, [0]);
   const sentences = texts(record, visual, visual.highlights[0]);
   assert.ok(sentences.some((text) => text.startsWith("생존률에 가장 큰 영향을 준 건 성별이에요")), sentences.join("\n"));
   assert.ok(sentences.some((text) => text.includes("번호라서 크고 작음에 의미가 없어요")), "번호 열은 의미 없다고 알려 준다");
@@ -54,4 +54,12 @@ test("대표 목표가 아닌 선을 고르면 대표 목표나 그 결과 열�
 test("원본 표가 없는 문서(PDF 등)는 해석을 만들지 않는다", () => {
   assert.equal(explainHighlight({ type: "pdf", pages: [] }, { type: "line_chart", data: {} }, { source_ids: ["page:1"] }), null);
   assert.equal(explainHighlight(null, null, null), null);
+});
+
+test("요인별 막대의 중요한 부분은 그 요인과 그룹 기준으로 설명한다", () => {
+  const record = loadCsvFixture("titanic-style-survival.csv");
+  const visual = buildSpreadsheetVisualizationSpec(record).visuals.find((item) => item.id.endsWith("driver-factor-3"));
+  const sentences = texts(record, visual, visual.highlights[0]);
+  assert.ok(sentences.some((text) => text.startsWith("성별이 ‘여’인 경우 생존률은")), sentences.join("\n"));
+  assert.ok(sentences.some((text) => text.includes("가장 큰 영향을 주는 요인")), sentences.join("\n"));
 });

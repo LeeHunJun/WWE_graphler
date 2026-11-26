@@ -4414,3 +4414,153 @@ svg {
 .sidebar-settings[hidden] {
   display: none;
 }
+
+/* 질문창: 첨부 파일 아래에서 궁금한 점을 적는다 */
+.question-bar {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #d6e4d2;
+  border-radius: 7px;
+  background: var(--green-tint);
+}
+
+.question-bar[hidden] {
+  display: none;
+}
+
+.question-label {
+  color: var(--forest);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.question-row {
+  display: flex;
+  gap: 6px;
+}
+
+.question-row input {
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #cfdccb;
+  border-radius: 5px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+}
+
+.question-row input:focus-visible {
+  outline: 2px solid var(--forest-soft);
+  outline-offset: 1px;
+}
+
+.question-submit {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--forest);
+  color: #fff;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.question-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.question-chip {
+  padding: 4px 8px;
+  border: 1px solid #d6e4d2;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--forest-soft);
+  font: inherit;
+  font-size: 8.5px;
+  cursor: pointer;
+}
+
+.question-chip:hover {
+  border-color: var(--forest-soft);
+}
+
+/* 질문에 대한 답 */
+.question-answer {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #cfe0ca;
+  border-left: 3px solid var(--forest-soft);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.question-answer[hidden] {
+  display: none;
+}
+
+.question-answer-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.question-answer-sentences {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.question-answer-item {
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.question-answer-item.level-critical::marker {
+  color: #b5473b;
+}
+
+.question-answer-item.level-important::marker {
+  color: #c98a2b;
+}
+
+.question-answer.is-unanswered {
+  border-left-color: var(--muted);
+}
+
+/* AI 요약을 눌러야 펼쳐지는 부가 정보 */
+.extra-insights {
+  display: grid;
+  gap: 11px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px dashed #d6e0d4;
+}
+
+.extra-insights[hidden] {
+  display: none;
+}
+
+.extra-insights-heading h3 {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.extra-insights-help {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 8.5px;
+}

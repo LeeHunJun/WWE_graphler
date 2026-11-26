@@ -30,13 +30,13 @@ function seriesNameOf(visual, highlight) {
 }
 
 // 이진 목표(생존 여부 등)는 "생존률"처럼, 숫자 목표는 열 이름 그대로 부른다.
-function measureName(target) {
+export function measureName(target) {
   if (target.kind !== "binary") return target.baseName;
   const stem = target.baseName.replace(/\s*(여부|유무)$/, "");
   return /[가-힣]$/.test(stem) ? `${stem}률` : `‘${target.baseName}=${target.positiveValue}’ 비율`;
 }
 
-function valueText(target, value) {
+export function valueText(target, value) {
   return target.kind === "binary" ? formatValue(value * 100, "%", 0) : formatValue(value, target.unit, 1);
 }
 
@@ -46,7 +46,7 @@ function amountChangeText(item) {
   return `${formatValue(item.from, item.unit, 1)} → ${formatValue(item.to, item.unit, 1)}, ${amount} ${diff < 0 ? "감소" : "증가"}`;
 }
 
-function explainPeriod(result, exclude = new Set()) {
+export function explainPeriod(result, exclude = new Set()) {
   const { target, period, factors = [] } = result;
   const { change } = period;
   const sentences = [];
@@ -111,6 +111,34 @@ function explainPeriod(result, exclude = new Set()) {
   return sentences;
 }
 
+function explainFactorGroup(result, factorIndex, highlight) {
+  const { target } = result;
+  const measure = measureName(target);
+  const ranked = result.factors.filter((factor) => factor.eta2 >= 0.01);
+  const factor = result.factors.find((item) => item.columnIndex === factorIndex);
+  if (!factor) return [];
+  // 막대 강조 라벨은 "가장 높음: 여 74.8%" 꼴이라, 콜론 뒤에서 마지막 값을 뺀 부분이 그룹 이름이다.
+  const label = String(highlight.label || "");
+  const named = /:\s*(.+?)\s+\S+$/.exec(label)?.[1]?.trim();
+  const group = factor.groups.find((item) => item.label === named)
+    || [...factor.groups].sort((a, b) => b.label.length - a.label.length).find((item) => label.includes(item.label));
+  const sentences = [];
+  if (group) {
+    const other = group.label === factor.best.label ? factor.worst : factor.best;
+    sentences.push({
+      level: "important",
+      text: `${factor.baseName}${josa(factor.baseName, "이/가")} ‘${group.label}’인 경우 ${measure}${josa(measure, "은/는")} ${valueText(target, group.value)}로, ‘${other.label}’(${valueText(target, other.value)})${josa(other.label, "과/와")} 비교돼요.`,
+    });
+  }
+  const rank = ranked.findIndex((item) => item.columnIndex === factorIndex);
+  if (rank === 0) {
+    sentences.push({ level: "critical", text: `${factor.baseName}${josa(factor.baseName, "은/는")} ${measure}에 가장 큰 영향을 주는 요인이에요.` });
+  } else if (rank > 0) {
+    sentences.push({ level: "info", text: `${factor.baseName}${josa(factor.baseName, "은/는")} 영향이 ${rank + 1}번째로 큰 요인이에요. 가장 큰 요인은 ${ranked[0].baseName}${josa(ranked[0].baseName, "이에요/예요")}.` });
+  }
+  return sentences;
+}
+
 function explainRecords(result, rowCells, seriesProfile) {
   const { target, factors } = result;
   const sentences = [];
@@ -128,7 +156,7 @@ function explainRecords(result, rowCells, seriesProfile) {
   if (top) {
     sentences.push({
       level: "critical",
-      text: `${measure}에 가장 큰 영향을 준 건 ${top.baseName}이에요. ‘${top.best.label}’${josa(top.best.label, "은/는")} ${valueText(target, top.best.value)}, ‘${top.worst.label}’${josa(top.worst.label, "은/는")} ${valueText(target, top.worst.value)}예요.`,
+      text: `${measure}에 가장 큰 영향을 준 건 ${top.baseName}${josa(top.baseName, "이에요/예요")}. ‘${top.best.label}’${josa(top.best.label, "은/는")} ${valueText(target, top.best.value)}, ‘${top.worst.label}’${josa(top.worst.label, "은/는")} ${valueText(target, top.worst.value)}예요.`,
     });
     if (rowCells && top.kind === "categorical") {
       const own = String(rowCells[top.columnIndex] ?? "").trim();
@@ -141,7 +169,7 @@ function explainRecords(result, rowCells, seriesProfile) {
       }
     }
     if (second && sentences.length < MAX_SENTENCES) {
-      sentences.push({ level: "info", text: `그다음으로 영향이 큰 요인은 ${second.baseName}이에요.` });
+      sentences.push({ level: "info", text: `그다음으로 영향이 큰 요인은 ${second.baseName}${josa(second.baseName, "이에요/예요")}.` });
     }
   } else if (factors.length > 0) {
     sentences.push({ level: "info", text: `어느 요인으로 나눠 봐도 ${measure} 차이가 크지 않아요.` });
@@ -198,9 +226,13 @@ export function explainHighlight(record, visual, highlight) {
     }
   }
 
-  const sentences = result.mode === "periods" && result.period
-    ? explainPeriod(result, exclude)
-    : explainRecords(result, findRowCells(sheet, location.rowNumber), seriesProfile);
+  // 원인 분석 그래프(요인별 막대 등)는 그 요인과 그룹 기준으로, 원본 행 그래프는 해당 행 기준으로 설명한다.
+  const factorMatch = /driver-factor-(\d+)$/.exec(String(visual?.id || ""));
+  const isDriverVisual = /driver-/.test(String(visual?.id || ""));
+  let sentences;
+  if (result.mode === "periods" && result.period) sentences = explainPeriod(result, exclude);
+  else if (factorMatch) sentences = explainFactorGroup(result, Number(factorMatch[1]), highlight);
+  else sentences = explainRecords(result, isDriverVisual ? null : findRowCells(sheet, location.rowNumber), seriesProfile);
   if (sentences.length === 0) return null;
   return {
     sentences: sentences.slice(0, MAX_SENTENCES),
