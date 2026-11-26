@@ -92,6 +92,13 @@ export async function ensureSignedIn() {
   setMode(window.location.hash === "#signup" ? "signup" : "login");
 
   return new Promise((resolve) => {
+    const completeSignIn = (signedIn) => {
+      screen.hidden = true;
+      setAppHidden(false);
+      if (window.location.hash === "#signup") window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      resolve(signedIn);
+    };
+
     document.querySelectorAll("[data-auth-mode]").forEach((tab) => {
       tab.addEventListener("click", () => setMode(tab.dataset.authMode));
     });
@@ -106,10 +113,7 @@ export async function ensureSignedIn() {
         try {
           const body = collect(form);
           const { user: signedIn } = await request(path, { method: "POST", body });
-          screen.hidden = true;
-          setAppHidden(false);
-          if (window.location.hash === "#signup") window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-          resolve(signedIn);
+          completeSignIn(signedIn);
         } catch (error) {
           setError(form, error.message);
           if (error.code === "USERNAME_TAKEN") {
@@ -120,6 +124,21 @@ export async function ensureSignedIn() {
         }
       });
     };
+
+    const guestButton = $("#guest-login");
+    guestButton.addEventListener("click", async () => {
+      status.hidden = true;
+      guestButton.disabled = true;
+      try {
+        const { user: guest } = await request("guest", { method: "POST", body: {} });
+        completeSignIn(guest);
+      } catch (error) {
+        status.textContent = error.message;
+        status.hidden = false;
+      } finally {
+        guestButton.disabled = false;
+      }
+    });
 
     handle($("#login-form"), "login", (form) => ({
       username: form.elements.username.value,

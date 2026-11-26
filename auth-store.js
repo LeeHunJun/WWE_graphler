@@ -7,6 +7,9 @@ import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCallback);
 const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
+export const GUEST_SESSION_TTL = 12 * 60 * 60 * 1000;
+const GUEST_WINDOW = 10 * 60 * 1000;
+const GUEST_MAX_SESSIONS = 10;
 const PASSWORD_MIN = 6;
 const PASSWORD_MAX = 128;
 const LOGIN_WINDOW = 10 * 60 * 1000;
@@ -53,13 +56,22 @@ function hashToken(token) {
 }
 
 export function publicUser(user) {
-  return { id: user.id, name: user.name, username: user.username, createdAt: user.createdAt };
+  return {
+    id: user.id,
+    name: user.name,
+    username: user.username,
+    createdAt: user.createdAt,
+    isGuest: user.isGuest === true,
+    ...(user.isGuest && Number.isFinite(user.guestExpiresAt) ? { guestExpiresAt: user.guestExpiresAt } : {}),
+  };
 }
 
 export function createAuthStore({ dataDir } = {}) {
   if (!dataDir) throw new Error("dataDir is required");
   const statePath = path.join(dataDir, "users.json");
   const failures = new Map();
+  const guestSessions = new Map();
+  const guestAttempts = new Map();
   let state = null;
   let queue = Promise.resolve();
 
@@ -122,7 +134,46 @@ export function createAuthStore({ dataDir } = {}) {
     }
   }
 
+  function createGuestSession({ clientKey = "" } = {}) {
+    const now = Date.now();
+    const key = String(clientKey || "unknown").slice(0, 120);
+    const entry = guestAttempts.get(key);
+    if (!entry || now - entry.firstAt > GUEST_WINDOW) {
+      guestAttempts.set(key, { count: 1, firstAt: now });
+    } else {
+      if (entry.count >= GUEST_MAX_SESSIONS) {
+        throw new AuthError(429, "TOO_MANY_GUEST_SESSIONS", "게스트 체험을 여러 번 시작했어요. 잠시 후 다시 시도해 주세요.");
+      }
+      entry.count += 1;
+    }
+
+    if (guestAttempts.size > 1000) {
+      for (const [attemptKey, attempt] of guestAttempts) {
+        if (now - attempt.firstAt > GUEST_WINDOW) guestAttempts.delete(attemptKey);
+      }
+    }
+
+    for (const [tokenHash, session] of guestSessions) {
+      if (session.expiresAt <= now) guestSessions.delete(tokenHash);
+    }
+
+    const user = publicUser({
+      id: `guest-${randomUUID()}`,
+      name: "게스트",
+      username: `guest_${randomBytes(5).toString("hex")}`,
+      isGuest: true,
+      createdAt: now,
+      guestExpiresAt: now + GUEST_SESSION_TTL,
+    });
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = now + GUEST_SESSION_TTL;
+    guestSessions.set(hashToken(token), { user, expiresAt });
+    return { user, session: { token, expiresAt } };
+  }
+
   return {
+    createGuestSession,
+
     signup({ name, username, password }) {
       return mutate(async (current) => {
         const cleanUsername = normalizeUsername(username);
@@ -159,16 +210,25 @@ export function createAuthStore({ dataDir } = {}) {
 
     logout(token) {
       if (!token) return Promise.resolve();
+      const tokenHash = hashToken(token);
+      if (guestSessions.delete(tokenHash)) return Promise.resolve();
       return mutate((current) => {
-        const tokenHash = hashToken(token);
         current.sessions = current.sessions.filter((session) => session.tokenHash !== tokenHash);
       });
     },
 
     async getUserBySession(token) {
       if (!token) return null;
-      const current = await serialize(load);
       const tokenHash = hashToken(token);
+      const guestSession = guestSessions.get(tokenHash);
+      if (guestSession) {
+        if (guestSession.expiresAt <= Date.now()) {
+          guestSessions.delete(tokenHash);
+          return null;
+        }
+        return guestSession.user;
+      }
+      const current = await serialize(load);
       const session = current.sessions.find((item) => item.tokenHash === tokenHash && item.expiresAt > Date.now());
       if (!session) return null;
       const user = current.users.find((item) => item.id === session.userId);

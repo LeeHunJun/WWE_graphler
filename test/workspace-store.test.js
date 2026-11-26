@@ -129,3 +129,26 @@ test("내가 속한 워크스페이스만 보이고, 처음엔 기본 워크스�
     assert.equal((await store.listWorkspaces(bob.id)).length, 2);
   });
 });
+
+test("게스트마다 비공개 체험 공간을 만들고 로그아웃 정리 시 서버 자료를 지운다", async () => {
+  await withStore(async (store, dataDir) => {
+    const guestA = { id: "guest-user-aaaaaa", name: "게스트", username: "guest_aaaa", isGuest: true };
+    const guestB = { id: "guest-user-bbbbbb", name: "게스트", username: "guest_bbbb", isGuest: true };
+    const [spaceA] = await store.ensureDefaultMembership(guestA);
+    const [spaceAAgain] = await store.ensureDefaultMembership(guestA);
+    const [spaceB] = await store.ensureDefaultMembership(guestB);
+
+    assert.equal(spaceA.name, "게스트 개인 공간");
+    assert.equal(spaceA.id, spaceAAgain.id, "한 게스트는 하나의 개인 공간만 사용합니다");
+    assert.notEqual(spaceA.id, spaceB.id, "게스트끼리 공간을 공유하지 않습니다");
+    assert.deepEqual((await store.listWorkspaces(guestA.id)).map((workspace) => workspace.id), [spaceA.id]);
+    assert.ok(!((await store.ensureDefaultMembership(alice)).map((workspace) => workspace.id)).includes(spaceA.id));
+
+    const shared = await store.shareDocument(spaceA.id, { actorId: guestA.id, record: csvRecord });
+    assert.equal((await store.deleteGuestWorkspaces(guestA.id)).count, 1);
+    assert.deepEqual(await store.listWorkspaces(guestA.id), []);
+    assert.deepEqual(await readdir(path.join(dataDir, "shared")), []);
+    assert.ok((await store.listWorkspaces(guestB.id)).some((workspace) => workspace.id === spaceB.id));
+    assert.ok(shared.id);
+  });
+});

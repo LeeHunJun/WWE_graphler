@@ -32,6 +32,27 @@ test("아이디·비밀번호로 가입하고 로그인한다", async () => {
   });
 });
 
+test("게스트는 저장 계정 없이 임시 세션을 받고 로그아웃하면 세션이 폐기된다", async () => {
+  await withStore(async (store, dataDir) => {
+    const { user, session } = store.createGuestSession({ clientKey: "guest-test" });
+    assert.equal(user.isGuest, true);
+    assert.equal(user.name, "게스트");
+    assert.match(user.id, /^guest-/);
+    assert.deepEqual(await store.getUserBySession(session.token), user);
+    await assert.rejects(readFile(path.join(dataDir, "users.json")), { code: "ENOENT" });
+
+    await store.logout(session.token);
+    assert.equal(await store.getUserBySession(session.token), null);
+  });
+});
+
+test("같은 주소에서 게스트 체험을 짧은 시간에 과도하게 만들 수 없다", async () => {
+  await withStore(async (store) => {
+    for (let index = 0; index < 10; index += 1) store.createGuestSession({ clientKey: "same-ip" });
+    assert.throws(() => store.createGuestSession({ clientKey: "same-ip" }), { code: "TOO_MANY_GUEST_SESSIONS" });
+  });
+});
+
 test("아이디 규칙, 중복 아이디, 짧은 비밀번호를 막는다", async () => {
   await withStore(async (store) => {
     await assert.rejects(store.signup({ name: "가", username: "ab", password: "secret1" }), { code: "INVALID_USERNAME" });

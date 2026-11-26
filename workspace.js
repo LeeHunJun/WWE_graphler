@@ -88,7 +88,7 @@ export function collectInsightCandidates(record, spec) {
 
 export function initWorkspace(hooks) {
   const state = {
-    profile: { id: hooks.user.id, name: hooks.user.name, username: hooks.user.username || "" },
+    profile: { id: hooks.user.id, name: hooks.user.name, username: hooks.user.username || "", isGuest: hooks.user.isGuest === true },
     workspaces: [],
     workspace: null,
     sharedDocuments: [],
@@ -111,6 +111,7 @@ export function initWorkspace(hooks) {
     profileMenu: $("#profile-menu"),
     userAvatar: $("#user-avatar"),
     userName: $("#user-name"),
+    settingsButton: $("#open-team-settings"),
     sharedCount: $("#sidebar-shared-count"),
     insightCount: $("#sidebar-insight-count"),
     sharedView: $("#shared-view"),
@@ -255,6 +256,7 @@ export function initWorkspace(hooks) {
 
     elements.userAvatar.textContent = initialOf(state.profile.name);
     elements.userName.textContent = state.profile.name;
+    elements.settingsButton.hidden = state.profile.isGuest;
     elements.sharedCount.textContent = String(state.sharedDocuments.length);
     elements.insightCount.textContent = String(state.insights.length);
   }
@@ -307,9 +309,12 @@ export function initWorkspace(hooks) {
         },
       }));
     });
-    menu.append(list, el("hr", "menu-divider"));
-    menu.append(menuItem("새 워크스페이스 만들기", { onClick: openCreateWorkspaceDialog }));
-    menu.append(menuItem("팀 설정", { onClick: openTeamSettings }));
+    menu.append(list);
+    if (!state.profile.isGuest) {
+      menu.append(el("hr", "menu-divider"));
+      menu.append(menuItem("새 워크스페이스 만들기", { onClick: openCreateWorkspaceDialog }));
+      menu.append(menuItem("팀 설정", { onClick: openTeamSettings }));
+    }
   }
 
   function renderProfileMenu() {
@@ -319,13 +324,13 @@ export function initWorkspace(hooks) {
     header.append(avatar(state.profile.name, "forest", "menu-avatar is-large"));
     const copy = el("div", "profile-menu-copy");
     copy.append(el("strong", "", state.profile.name));
-    copy.append(el("span", "", `@${state.profile.username}`));
+    copy.append(el("span", "", state.profile.isGuest ? "계정 없이 체험 중" : `@${state.profile.username}`));
     const role = myRole();
-    if (role) copy.append(el("span", `role-badge role-${role}`, `${state.workspace.name} · ${ROLE_LABELS[role]}`));
+    if (role) copy.append(el("span", `role-badge role-${role}`, `${state.workspace.name} · ${state.profile.isGuest ? "비공개 체험" : ROLE_LABELS[role]}`));
     header.append(copy);
     menu.append(header, el("hr", "menu-divider"));
     // 좁은 화면에서는 사이드바가 숨으므로 워크스페이스 전환을 프로필 메뉴에서도 제공한다.
-    if (state.online && state.workspaces.length > 0) {
+    if (!state.profile.isGuest && state.online && state.workspaces.length > 0) {
       const mobileSwitch = el("div", "menu-list mobile-only");
       mobileSwitch.append(el("p", "menu-heading", "워크스페이스"));
       state.workspaces.forEach((workspace) => {
@@ -341,20 +346,22 @@ export function initWorkspace(hooks) {
       mobileSwitch.append(el("hr", "menu-divider"));
       menu.append(mobileSwitch);
     }
-    menu.append(menuItem("프로필 편집", { description: "이름과 비밀번호를 바꿔요", onClick: openProfileDialog }));
+    if (!state.profile.isGuest) menu.append(menuItem("프로필 편집", { description: "이름과 비밀번호를 바꿔요", onClick: openProfileDialog }));
     menu.append(menuItem("저장한 인사이트", { description: `${state.insights.length}개`, onClick: () => navigate("insights") }));
     menu.append(menuItem("공유 문서", { description: `${state.sharedDocuments.length}개`, onClick: () => navigate("shared") }));
-    menu.append(menuItem("팀 설정", { onClick: openTeamSettings }));
+    if (!state.profile.isGuest) menu.append(menuItem("팀 설정", { onClick: openTeamSettings }));
     menu.append(el("hr", "menu-divider"));
     menu.append(menuItem("로그아웃", {
-      description: `@${state.profile.username}`,
+      description: state.profile.isGuest ? "체험 종료 · 저장한 자료 삭제" : `@${state.profile.username}`,
       onClick: () => hooks.signOut(),
     }));
   }
 
   function renderSharedView() {
     const query = elements.sharedSearch.value.trim().toLocaleLowerCase("ko");
-    elements.sharedWorkspaceLabel.textContent = state.workspace ? `${state.workspace.name} 멤버 모두가 볼 수 있어요.` : OFFLINE_MESSAGE;
+    elements.sharedWorkspaceLabel.textContent = state.workspace
+      ? state.profile.isGuest ? "게스트 개인 공간에만 저장돼요." : `${state.workspace.name} 멤버 모두가 볼 수 있어요.`
+      : OFFLINE_MESSAGE;
     const list = elements.sharedList;
     list.replaceChildren();
     const documents = state.sharedDocuments.filter((item) => !query
@@ -422,7 +429,9 @@ export function initWorkspace(hooks) {
   function renderInsightsView() {
     const query = elements.insightSearch.value.trim().toLocaleLowerCase("ko");
     elements.insightWorkspaceLabel.textContent = state.workspace
-      ? `${state.workspace.name}에서 저장한 인사이트예요. 시각화 패널의 ‘인사이트 저장’으로 추가할 수 있어요.`
+      ? state.profile.isGuest
+        ? "게스트 개인 공간에 저장한 인사이트예요. 공간은 12시간 후 만료되며 로그아웃하면 삭제돼요."
+        : `${state.workspace.name}에서 저장한 인사이트예요. 시각화 패널의 ‘인사이트 저장’으로 추가할 수 있어요.`
       : OFFLINE_MESSAGE;
     document.querySelectorAll("[data-insight-filter]").forEach((button) => {
       const selected = button.dataset.insightFilter === state.insightFilter;

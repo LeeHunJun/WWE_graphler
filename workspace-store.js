@@ -7,6 +7,7 @@ import path from "node:path";
 export const ROLES = Object.freeze(["owner", "editor", "viewer"]);
 export const ROLE_LABELS = Object.freeze({ owner: "관리자", editor: "편집자", viewer: "보기 전용" });
 export const WORKSPACE_COLORS = Object.freeze(["forest", "blue", "coral", "violet", "amber"]);
+const GUEST_WORKSPACE_TTL = 12 * 60 * 60 * 1000;
 
 const LIMITS = Object.freeze({
   workspaceName: 40,
@@ -123,14 +124,16 @@ export function createWorkspaceStore({ dataDir, seed = true } = {}) {
   let queue = Promise.resolve();
 
   async function load() {
-    if (state) return state;
-    try {
-      const parsed = JSON.parse(await readFile(statePath, "utf8"));
-      state = parsed && Array.isArray(parsed.workspaces) ? parsed : createEmptyState();
-    } catch (error) {
-      if (error.code !== "ENOENT") throw new WorkspaceError(500, "STORE_UNREADABLE", "워크스페이스 저장 파일을 읽지 못했습니다.");
-      state = seed ? seedState() : createEmptyState();
+    if (!state) {
+      try {
+        const parsed = JSON.parse(await readFile(statePath, "utf8"));
+        state = parsed && Array.isArray(parsed.workspaces) ? parsed : createEmptyState();
+      } catch (error) {
+        if (error.code !== "ENOENT") throw new WorkspaceError(500, "STORE_UNREADABLE", "워크스페이스 저장 파일을 읽지 못했습니다.");
+        state = seed ? seedState() : createEmptyState();
+      }
     }
+    await pruneExpiredGuestWorkspaces(state);
     return state;
   }
 
@@ -176,6 +179,50 @@ export function createWorkspaceStore({ dataDir, seed = true } = {}) {
     return path.join(sharedDir, `${cleanId(documentId, "문서")}.json`);
   }
 
+  async function pruneExpiredGuestWorkspaces(current) {
+    const now = Date.now();
+    const expired = current.workspaces.filter((workspace) => workspace.guestOwnerId && workspace.guestExpiresAt <= now);
+    if (expired.length === 0) return;
+    const expiredIds = new Set(expired.map((workspace) => workspace.id));
+    current.workspaces = current.workspaces.filter((workspace) => !expiredIds.has(workspace.id));
+    await Promise.all(expired.flatMap((workspace) => workspace.sharedDocuments.map((item) => rm(sharedPath(item.id), { force: true }))));
+    await persist();
+  }
+
+  function createGuestWorkspace(actor) {
+    return mutate((current) => {
+      const actorId = cleanId(actor?.id);
+      const existing = current.workspaces.find((workspace) => workspace.guestOwnerId === actorId);
+      if (existing) return publicWorkspace(existing);
+      if (current.workspaces.length >= LIMITS.workspaces) {
+        throw new WorkspaceError(400, "LIMIT_REACHED", "워크스페이스를 더 만들 수 없어요.");
+      }
+      const now = Date.now();
+      const workspace = {
+        id: `ws-${randomUUID()}`,
+        name: "게스트 개인 공간",
+        description: "12시간 동안 사용할 수 있는 비공개 체험 공간이에요.",
+        color: "forest",
+        createdAt: now,
+        updatedAt: now,
+        settings: { allowEditorShare: true, allowViewerInsights: true },
+        members: [{
+          id: actorId,
+          name: cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" }),
+          username: cleanText(actor?.username, LIMITS.username, { label: "아이디" }),
+          role: "owner",
+          joinedAt: now,
+        }],
+        sharedDocuments: [],
+        insights: [],
+        guestOwnerId: actorId,
+        guestExpiresAt: now + GUEST_WORKSPACE_TTL,
+      };
+      current.workspaces.push(workspace);
+      return publicWorkspace(workspace);
+    });
+  }
+
   return {
     // 내가 멤버인 워크스페이스만 보여준다. 다른 워크스페이스는 초대 링크로 참여한다.
     async listWorkspaces(actorId) {
@@ -188,12 +235,25 @@ export function createWorkspaceStore({ dataDir, seed = true } = {}) {
 
     // 처음 로그인해 속한 워크스페이스가 없으면 기본 워크스페이스에 참여시킨다.
     async ensureDefaultMembership(actor) {
+      if (actor?.isGuest) return [await createGuestWorkspace(actor)];
       const mine = await this.listWorkspaces(actor.id);
       if (mine.length > 0) return mine;
       const current = await serialize(load);
       const target = current.workspaces.find((workspace) => workspace.id === "ws-product-team") || current.workspaces[0];
       if (!target) return [];
       return [await this.joinWorkspace(target.id, { actor })];
+    },
+
+    deleteGuestWorkspaces(actorId) {
+      return mutate(async (current) => {
+        const ownerId = cleanId(actorId);
+        const removed = current.workspaces.filter((workspace) => workspace.guestOwnerId === ownerId);
+        if (removed.length === 0) return { count: 0 };
+        const removedIds = new Set(removed.map((workspace) => workspace.id));
+        current.workspaces = current.workspaces.filter((workspace) => !removedIds.has(workspace.id));
+        await Promise.all(removed.flatMap((workspace) => workspace.sharedDocuments.map((item) => rm(sharedPath(item.id), { force: true }))));
+        return { count: removed.length };
+      });
     },
 
     async getWorkspace(workspaceId) {

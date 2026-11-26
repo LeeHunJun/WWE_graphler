@@ -43,10 +43,25 @@ export async function handleWorkspaceApi(request, response, { workspaceStore: st
     const user = await getRequestUser(request, authStore);
     if (!user) throw new WorkspaceError(401, "UNAUTHORIZED", "로그인이 필요해요. 다시 로그인해 주세요.");
     const actorId = user.id;
-    const actor = { id: user.id, name: user.name, username: user.username };
+    const actor = { id: user.id, name: user.name, username: user.username, isGuest: user.isGuest === true };
 
     const [workspaceId, collection, itemId, ...rest] = parts;
     if (rest.length > 0) throw new WorkspaceError(404, "NOT_FOUND", "지원하지 않는 주소예요.");
+
+    if (user.isGuest) {
+      if (!workspaceId && method !== "GET") {
+        throw new WorkspaceError(403, "GUEST_RESTRICTED", "게스트는 새 팀 워크스페이스를 만들 수 없어요.");
+      }
+      if (workspaceId) {
+        if (collection === "members" || (!collection && method !== "GET")) {
+          throw new WorkspaceError(403, "GUEST_RESTRICTED", "게스트는 다른 팀에 참여하거나 팀 설정을 바꿀 수 없어요.");
+        }
+        const guestWorkspaces = await store.listWorkspaces(actorId);
+        if (!guestWorkspaces.some((workspace) => workspace.id === workspaceId)) {
+          throw new WorkspaceError(403, "GUEST_RESTRICTED", "게스트 개인 공간에서만 사용할 수 있어요.");
+        }
+      }
+    }
 
     if (!workspaceId) {
       if (method === "GET") return send(response, 200, { workspaces: await store.ensureDefaultMembership(actor) });

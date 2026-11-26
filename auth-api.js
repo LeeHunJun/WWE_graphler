@@ -1,5 +1,5 @@
 // /api/auth 경로: 회원가입(프로필 생성), 로그인, 로그아웃, 내 정보, 프로필 수정.
-import { AuthError } from "./auth-store.js";
+import { AuthError, GUEST_SESSION_TTL } from "./auth-store.js";
 
 export const SESSION_COOKIE = "grappler_session";
 const BODY_LIMIT = 64 * 1024;
@@ -83,6 +83,12 @@ export async function handleAuthApi(request, response, { authStore, workspaceSto
       return send(response, 200, { user });
     }
 
+    if (action === "guest" && request.method === "POST") {
+      const clientKey = String(request.headers["x-forwarded-for"] || request.socket?.remoteAddress || "").split(",")[0].trim();
+      const { user, session } = await authStore.createGuestSession({ clientKey });
+      return send(response, 201, { user }, { "Set-Cookie": sessionCookie(request, session.token, session.expiresAt) });
+    }
+
     if (action === "signup" && request.method === "POST") {
       const body = await readJson(request);
       const { user, session } = await authStore.signup(body);
@@ -97,13 +103,21 @@ export async function handleAuthApi(request, response, { authStore, workspaceSto
     }
 
     if (action === "logout" && request.method === "POST") {
-      await authStore.logout(readSessionToken(request));
+      const token = readSessionToken(request);
+      const current = await getRequestUser(request, authStore);
+      await authStore.logout(token);
+      if (current?.isGuest) {
+        await workspaceStore?.deleteGuestWorkspaces(current.id).catch((error) => {
+          process.stderr.write(`[grappler-guest] 체험 공간 정리 실패: ${error?.message || error}\n`);
+        });
+      }
       return send(response, 200, { ok: true }, { "Set-Cookie": sessionCookie(request, "", 0) });
     }
 
     if (action === "me" && request.method === "PATCH") {
       const current = await getRequestUser(request, authStore);
       if (!current) throw new AuthError(401, "UNAUTHORIZED", "다시 로그인해 주세요.");
+      if (current.isGuest) throw new AuthError(403, "GUEST_PROFILE_LOCKED", "게스트 프로필은 수정할 수 없어요.");
       const body = await readJson(request);
       const user = await authStore.updateProfile(current.id, body);
       await workspaceStore?.syncMemberProfile(user).catch(() => {});

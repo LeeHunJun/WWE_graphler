@@ -8,6 +8,8 @@ import { ensureSignedIn, signOut, updateProfile } from "./auth.js";
 
 const LEGACY_DATABASE_NAME = "grappler-local-documents";
 const LEGACY_OWNER_KEY = "grappler-legacy-documents-owner";
+const LAST_GUEST_USER_KEY = "grappler-last-guest-user";
+const LAST_GUEST_EXPIRES_KEY = "grappler-last-guest-expires";
 // 같은 브라우저를 여러 계정이 써도 내 문서 보관함이 섞이지 않게 계정별로 저장소를 나눈다.
 let databaseName = LEGACY_DATABASE_NAME;
 const DATABASE_VERSION = 1;
@@ -121,6 +123,73 @@ function openDatabase() {
   }
 
   return databasePromise;
+}
+
+async function deleteDocumentDatabase(userId) {
+  const targetName = `${LEGACY_DATABASE_NAME}--${userId}`;
+  if (databaseName === targetName && databasePromise) {
+    try {
+      const database = await databasePromise;
+      database.close();
+    } catch {
+      // The guest database may not have been opened yet.
+    }
+    databasePromise = undefined;
+  }
+
+  await new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(targetName);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error("게스트 자료를 지우지 못했습니다."));
+    request.onblocked = () => reject(new Error("다른 탭에서 게스트 자료를 사용 중입니다."));
+  });
+}
+
+async function clearExpiredGuestDatabase() {
+  let guestId = "";
+  let expiresAt = NaN;
+  try {
+    guestId = window.localStorage.getItem(LAST_GUEST_USER_KEY) || "";
+    expiresAt = Number(window.localStorage.getItem(LAST_GUEST_EXPIRES_KEY));
+  } catch {
+    return;
+  }
+  if (!guestId || !Number.isFinite(expiresAt) || expiresAt > Date.now()) return;
+
+  try {
+    await deleteDocumentDatabase(guestId);
+    window.localStorage.removeItem(LAST_GUEST_USER_KEY);
+    window.localStorage.removeItem(LAST_GUEST_EXPIRES_KEY);
+  } catch {
+    // A blocked database will be retried on the next visit.
+  }
+}
+
+async function clearPreviousGuestDatabase(user) {
+  let previousGuestId = "";
+  try {
+    previousGuestId = window.localStorage.getItem(LAST_GUEST_USER_KEY) || "";
+  } catch {
+    return;
+  }
+
+  if (previousGuestId && previousGuestId !== user.id) {
+    try {
+      await deleteDocumentDatabase(previousGuestId);
+      window.localStorage.removeItem(LAST_GUEST_USER_KEY);
+      window.localStorage.removeItem(LAST_GUEST_EXPIRES_KEY);
+    } catch {
+      // A blocked browser database should not prevent signing in.
+    }
+  }
+  if (user.isGuest) {
+    try {
+      window.localStorage.setItem(LAST_GUEST_USER_KEY, user.id);
+      if (Number.isFinite(user.guestExpiresAt)) window.localStorage.setItem(LAST_GUEST_EXPIRES_KEY, String(user.guestExpiresAt));
+    } catch {
+      // The guest session still works if browser storage is unavailable.
+    }
+  }
 }
 
 async function getStoredDocuments() {
@@ -1519,7 +1588,20 @@ async function claimLegacyDocuments(user) {
 function startWorkspace(user) {
   workspace = initWorkspace({
     user,
-    signOut,
+    signOut: async () => {
+      if (user.isGuest) {
+        try {
+          await deleteDocumentDatabase(user.id);
+          if (window.localStorage.getItem(LAST_GUEST_USER_KEY) === user.id) {
+            window.localStorage.removeItem(LAST_GUEST_USER_KEY);
+            window.localStorage.removeItem(LAST_GUEST_EXPIRES_KEY);
+          }
+        } catch {
+          // End the server session even if another tab temporarily blocks local cleanup.
+        }
+      }
+      await signOut();
+    },
     updateProfile,
     onSignedOut: () => window.location.reload(),
     showToast,
@@ -1563,7 +1645,9 @@ async function init() {
 }
 
 async function startApp() {
+  await clearExpiredGuestDatabase();
   const user = await ensureSignedIn();
+  await clearPreviousGuestDatabase(user);
   databaseName = `${LEGACY_DATABASE_NAME}--${user.id}`;
   await claimLegacyDocuments(user);
   startWorkspace(user);
