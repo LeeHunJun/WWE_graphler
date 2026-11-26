@@ -1033,12 +1033,6 @@ function drawKpiCards(visual, content, sourceLookup, onNavigate) {
   content.append(grid);
 }
 
-function formatDerivedValue(value) {
-  if (value === null) return "계산할 수 없음 (분모가 0이거나 원본이 비어 있음)";
-  if (typeof value === "number") return new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value);
-  return String(value);
-}
-
 function appendExplanation(detail, explanation) {
   if (!explanation?.sentences?.length) return;
   const box = createElement("div", "highlight-explanation");
@@ -1067,22 +1061,6 @@ function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, 
   }
   appendExplanation(detail, explanation);
 
-  if (highlight.derived) {
-    // 계산식은 접어 두고, 궁금할 때만 펼쳐 볼 수 있게 한다.
-    const derived = createElement("details", "highlight-derived");
-    derived.append(createElement("summary", "", "계산 근거 보기"));
-    derived.append(createElement("strong", "", "계산식"));
-    derived.append(createElement("p", "", highlight.derived.formula));
-    derived.append(createElement("strong", "", "계산에 사용한 원래 값"));
-    highlight.derived.original_values.forEach((item) => {
-      derived.append(createElement("p", "", `${item.label}: ${formatDerivedValue(item.value)}`));
-    });
-    if (Object.hasOwn(highlight.derived, "result")) {
-      derived.append(createElement("p", "", `계산 결과: ${formatDerivedValue(highlight.derived.result)}`));
-    }
-    detail.append(derived);
-  }
-
   highlight.source_ids.forEach((sourceId) => {
     const location = sourceLookup.get(sourceId);
     if (!location?.text?.trim()) return;
@@ -1096,15 +1074,6 @@ function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, 
     detail.append(evidence);
   });
 
-  const links = createElement("div", "highlight-source-links");
-  highlight.source_ids.forEach((sourceId) => {
-    const location = sourceLookup.get(sourceId);
-    const button = createElement("button", "", location?.label || "원본 위치");
-    button.type = "button";
-    button.addEventListener("click", () => onNavigate?.(sourceId));
-    links.append(button);
-  });
-  detail.append(links);
   card.append(detail);
 
   const targetKey = highlight.target.row_id
@@ -1117,8 +1086,8 @@ function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, 
     target?.classList.add("visual-data-highlighted");
   }
 
-  // 중요한 부분을 누르면 화면을 미리보기로 옮기지 않고, 펼친 설명이 보이는 곳에 머문다.
-  // 원본 행으로 가고 싶을 때만 아래 '원본 위치' 버튼을 누르면 된다.
+  // 중요한 부분을 누르면 화면을 옮기지 않고 그 자리에서 해석과 원문 근거만 보여 준다.
+  // (계산식·원본 위치 이동 버튼은 두지 않는다.)
   detail.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
 }
 
