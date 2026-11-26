@@ -346,7 +346,7 @@ function hasDuplicateKeyPoints(keyPoints) {
   return normalized.some((text, index) => text.length > 0 && normalized.slice(index + 1).includes(text));
 }
 
-export function validateAiQuality(result, document) {
+export function validateAiQuality(result, document, { partialCoverage = false } = {}) {
   const issues = [];
   const sourceMap = getSourceMap(document);
   const visuals = result.spec.visuals;
@@ -440,6 +440,13 @@ export function validateAiQuality(result, document) {
     ...result.summary.flatMap((item) => item.source_ids),
     ...result.key_points.flatMap((item) => item.source_ids),
   ]);
+  const importantGroups = [
+    ["결정·승인", unique(signals.decision)],
+    ["수치 변경", unique(signals.change)],
+    ["업무 절차", unique(signals.process)],
+    ["일정·마감", unique(signals.schedule)],
+    ["위험·필수", unique([...signals.risk, ...signals.strictPriority])],
+  ].filter(([, sourceIds]) => sourceIds.length > 0);
   const importantSourceIds = unique([
     ...signals.decision,
     ...signals.change,
@@ -449,9 +456,17 @@ export function validateAiQuality(result, document) {
     ...signals.strictPriority,
   ]);
 
-  for (const sourceId of importantSourceIds) {
-    if (!topLevelReferences.includes(sourceId)) {
-      issues.push(`중요한 원본 위치 ${sourceId}가 전체 요약이나 핵심 내용에서 빠졌습니다.`);
+  if (partialCoverage) {
+    for (const [label, sourceIds] of importantGroups) {
+      if (!topLevelReferences.some((sourceId) => sourceIds.includes(sourceId))) {
+        issues.push(`${label} 관련 핵심 원본이 전체 요약이나 핵심 내용에서 빠졌습니다.`);
+      }
+    }
+  } else {
+    for (const sourceId of importantSourceIds) {
+      if (!topLevelReferences.includes(sourceId)) {
+        issues.push(`중요한 원본 위치 ${sourceId}가 전체 요약이나 핵심 내용에서 빠졌습니다.`);
+      }
     }
   }
 
@@ -506,6 +521,16 @@ export function validateAiQuality(result, document) {
       && visual.source_ids.some((sourceId) => signals.change.includes(sourceId)));
     if (changeVisuals.length === 0) {
       issues.push("원문에 수치 변경이 있지만 변화에 맞는 line_chart, bar_chart 또는 comparison_table이 없습니다.");
+    } else if (partialCoverage) {
+      const representedChanges = signals.change.filter((sourceId) => changeVisuals.some((visual) =>
+        visual.highlights.some((highlight) => ["critical", "important"].includes(highlight.level)
+          && highlight.source_ids.includes(sourceId))));
+      if (representedChanges.length === 0) {
+        issues.push("구간의 수치 변경 중 핵심 항목을 critical 또는 important로 강조하지 않았습니다.");
+      } else if (!representedChanges.some((sourceId) => changeVisuals.some((visual) =>
+        visual.highlights.some((highlight) => highlight.derived && highlight.source_ids.includes(sourceId))))) {
+        issues.push("강조한 수치 변경에 계산식과 원래 값이 없습니다.");
+      }
     } else {
       for (const sourceId of signals.change) {
         const changeHighlights = changeVisuals.flatMap((visual) => visual.highlights.filter((highlight) =>
@@ -517,10 +542,18 @@ export function validateAiQuality(result, document) {
     }
   }
 
-  for (const sourceId of [...signals.risk, ...signals.strictPriority]) {
-    const highlighted = visuals.some((visual) => visual.highlights.some((highlight) =>
-      highlight.source_ids.includes(sourceId) && ["critical", "important"].includes(highlight.level)));
-    if (!highlighted) issues.push(`위험·필수 원본 ${sourceId}에 critical 또는 important 강조가 없습니다.`);
+  const riskAndPrioritySources = unique([...signals.risk, ...signals.strictPriority]);
+  if (partialCoverage && riskAndPrioritySources.length > 0) {
+    const anyHighlighted = visuals.some((visual) => visual.highlights.some((highlight) =>
+      highlight.source_ids.some((sourceId) => riskAndPrioritySources.includes(sourceId))
+      && ["critical", "important"].includes(highlight.level)));
+    if (!anyHighlighted) issues.push("구간의 위험·필수 항목 중 핵심 내용을 critical 또는 important로 강조하지 않았습니다.");
+  } else {
+    for (const sourceId of riskAndPrioritySources) {
+      const highlighted = visuals.some((visual) => visual.highlights.some((highlight) =>
+        highlight.source_ids.includes(sourceId) && ["critical", "important"].includes(highlight.level)));
+      if (!highlighted) issues.push(`위험·필수 원본 ${sourceId}에 critical 또는 important 강조가 없습니다.`);
+    }
   }
 
   for (const visual of visuals) {

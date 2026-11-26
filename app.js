@@ -21,6 +21,7 @@ const UNREADABLE_MESSAGE = "파일의 내용을 읽을 수 없습니다. 파일�
 const AI_RETRY_MESSAGE = "잠시 후 다시 시도해 주세요";
 // 자동 시각화 규칙이 바뀌면 올린다. 저장된 문서의 자동 그래프를 새 규칙으로 다시 만든다.
 const VISUAL_SPEC_VERSION = 2;
+const AI_JOB_CLIENT_TIMEOUT_MS = 12 * 60 * 1000;
 const FILE_TYPES = {
   pdf: { label: "PDF", icon: "P", className: "pdf" },
   csv: { label: "CSV", icon: "C", className: "csv" },
@@ -1160,6 +1161,71 @@ function getCombinedVisualSpec(record) {
   };
 }
 
+function waitForAiJobPoll(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    let timer;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      cleanup();
+      reject(signal.reason);
+    };
+    timer = window.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+async function requestAiSummaryJob(record) {
+  const signal = AbortSignal.timeout(AI_JOB_CLIENT_TIMEOUT_MS);
+  const submission = await fetch("/api/ai-summarize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document: createAiSourcePayload(record) }),
+    signal,
+  });
+  let submissionResult;
+  try {
+    submissionResult = await submission.json();
+  } catch {
+    throw new Error(AI_RETRY_MESSAGE);
+  }
+
+  if (submission.status !== 202) return { response: submission, result: submissionResult };
+  const jobId = submissionResult.jobId;
+  if (typeof jobId !== "string" || !jobId) throw new Error(AI_RETRY_MESSAGE);
+
+  let pollAfterMs = Number(submissionResult.pollAfterMs) || 750;
+  while (true) {
+    await waitForAiJobPoll(Math.min(5000, Math.max(300, pollAfterMs)), signal);
+    const response = await fetch(`/api/ai-summarize/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      cache: "no-store",
+      signal,
+    });
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw new Error(AI_RETRY_MESSAGE);
+    }
+    if (response.status !== 202) {
+      if (response.status === 404 && result.code === "AI_JOB_NOT_FOUND") {
+        throw new Error("분석 작업이 만료되었어요. 다시 분석해 주세요.");
+      }
+      return { response, result };
+    }
+    pollAfterMs = Number(result.pollAfterMs) || pollAfterMs;
+  }
+}
+
 async function runAiSummary(record) {
   if (!record || aiLoadingDocuments.has(record.id)) return;
 
@@ -1168,19 +1234,7 @@ async function runAiSummary(record) {
   renderAiSummary(record);
 
   try {
-    const response = await fetch("/api/ai-summarize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ document: createAiSourcePayload(record) }),
-      signal: AbortSignal.timeout(150000),
-    });
-
-    let result;
-    try {
-      result = await response.json();
-    } catch {
-      throw new Error(AI_RETRY_MESSAGE);
-    }
+    const { response, result } = await requestAiSummaryJob(record);
 
     if (!response.ok) {
       if (result.code === "AI_RESPONSE_INVALID") {

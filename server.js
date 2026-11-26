@@ -1,8 +1,10 @@
 import { createServer as createHttpServer } from "node:http";
 import { createReadStream } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AiJobQueueError, createAiJobStore } from "./ai-job-store.js";
 import { AiServiceError, requestAiSummary } from "./ai-service.js";
 import { handleAuthApi, isAuthApiPath } from "./auth-api.js";
 import { createAuthStore } from "./auth-store.js";
@@ -18,6 +20,7 @@ const BODY_LIMIT = 16 * 1024 * 1024;
 let database;
 let workspaceStore;
 let authStore;
+const aiJobStore = createAiJobStore({ maxConcurrent: 1, maxQueued: 1, maxStored: 100, ttlMs: 10 * 60 * 1000 });
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
@@ -90,23 +93,35 @@ async function logAiResponseDiagnostic(entry) {
   await appendFile(DIAGNOSTIC_LOG, line, { encoding: "utf8", mode: 0o600 });
 }
 
-function sendJson(response, statusCode, payload) {
+function sendJson(response, statusCode, payload, extraHeaders = {}) {
   response.writeHead(statusCode, {
     "Cache-Control": "no-store",
     "Content-Type": "application/json; charset=utf-8",
     "X-Content-Type-Options": "nosniff",
+    ...extraHeaders,
   });
   response.end(JSON.stringify(payload));
 }
 
-async function handleAiRequest(request, response) {
-  if (request.method !== "POST") {
-    sendJson(response, 405, { error: "POST 요청만 지원합니다.", code: "METHOD_NOT_ALLOWED" });
-    return;
-  }
+function getAiErrorResponse(error) {
+  const code = error instanceof AiServiceError || error instanceof AiJobQueueError ? error.code : "AI_CALL_FAILED";
+  const message = error instanceof AiJobQueueError
+    ? error.message
+    : error instanceof AiServiceError && ["AI_RESPONSE_INVALID", "AI_CALL_FAILED"].includes(error.code)
+      ? "잠시 후 다시 시도해 주세요"
+      : error instanceof AiServiceError
+        ? error.message
+        : "AI 서비스 요청에 실패했습니다. 다시 시도해 주세요.";
+  const status = error instanceof AiJobQueueError ? error.status
+    : code === "INVALID_DOCUMENT" ? 400
+      : code === "NO_ANALYZABLE_CONTENT" ? 422
+        : code === "AI_NOT_CONFIGURED" || code === "AI_RESPONSE_INVALID" || code === "AI_CALL_FAILED" ? 503
+          : 502;
+  return { statusCode: status, body: { error: message, code } };
+}
 
+async function executeAiJob(payload, requestId, startedAt) {
   try {
-    const payload = await readJsonBody(request);
     const assets = await getContractAssets();
     const result = await requestAiSummary(payload.document, {
       ...getServiceConfig(),
@@ -114,6 +129,8 @@ async function handleAiRequest(request, response) {
       onDiagnostic: async (entry) => {
         try {
           await logAiResponseDiagnostic({
+            request_id: requestId,
+            request_elapsed_ms: Date.now() - startedAt,
             model: "jitda-chat",
             document_type: payload.document?.type || "unknown",
             ...entry,
@@ -123,21 +140,66 @@ async function handleAiRequest(request, response) {
         }
       },
     });
-    sendJson(response, 200, result);
+    return { statusCode: 200, body: result };
   } catch (error) {
-    const code = error instanceof AiServiceError ? error.code : "AI_CALL_FAILED";
-    const message = error instanceof AiServiceError && ["AI_RESPONSE_INVALID", "AI_CALL_FAILED"].includes(error.code)
-      ? "잠시 후 다시 시도해 주세요"
-      : error instanceof AiServiceError
-        ? error.message
-      : "AI 서비스 요청에 실패했습니다. 다시 시도해 주세요.";
-    const status = code === "INVALID_DOCUMENT" ? 400
-      : code === "NO_ANALYZABLE_CONTENT" ? 422
-        : code === "AI_TIMEOUT" ? 504
-        : code === "AI_NOT_CONFIGURED" || code === "AI_RESPONSE_INVALID" || code === "AI_CALL_FAILED" ? 503
-          : 502;
-    sendJson(response, status, { error: message, code });
+    return getAiErrorResponse(error);
   }
+}
+
+async function handleAiRequest(request, response) {
+  const url = new URL(request.url, "http://localhost");
+  const requestId = randomUUID();
+
+  if (url.pathname === "/api/ai-summarize" && request.method === "POST") {
+    try {
+      const payload = await readJsonBody(request);
+      const startedAt = Date.now();
+      const job = aiJobStore.submit(({ jobId }) => executeAiJob(payload, jobId, startedAt));
+      sendJson(response, 202, { ...job, message: "AI 분석을 시작했습니다." }, {
+        "Retry-After": "1",
+        "X-Request-Id": job.jobId,
+      });
+    } catch (error) {
+      const failure = getAiErrorResponse(error);
+      sendJson(response, failure.statusCode, failure.body, { "X-Request-Id": requestId });
+    }
+    return;
+  }
+
+  const match = url.pathname.match(/^\/api\/ai-summarize\/([^/]+)$/);
+  if (match && request.method === "GET") {
+    let jobId;
+    try {
+      jobId = decodeURIComponent(match[1]);
+    } catch {
+      sendJson(response, 404, { error: "분석 작업을 찾을 수 없습니다.", code: "AI_JOB_NOT_FOUND" });
+      return;
+    }
+    const job = aiJobStore.get(jobId);
+    if (!job) {
+      sendJson(response, 404, { error: "분석 작업을 찾을 수 없습니다. 새로 분석해 주세요.", code: "AI_JOB_NOT_FOUND" }, { "X-Request-Id": jobId });
+      return;
+    }
+    if (job.status !== "completed" && job.status !== "failed") {
+      sendJson(response, 202, {
+        jobId: job.jobId,
+        status: job.status,
+        queuePosition: job.queuePosition,
+        pollAfterMs: 1000,
+      }, { "Retry-After": "1", "X-Request-Id": job.jobId });
+      return;
+    }
+    const result = job.result || { statusCode: 503, body: { error: "잠시 후 다시 시도해 주세요", code: "AI_CALL_FAILED" } };
+    sendJson(response, result.statusCode, result.body, { "X-Request-Id": job.jobId });
+    return;
+  }
+
+  if (url.pathname === "/api/ai-summarize" || url.pathname.startsWith("/api/ai-summarize/")) {
+    sendJson(response, 405, { error: "분석 요청은 POST, 작업 확인은 GET을 사용해 주세요.", code: "METHOD_NOT_ALLOWED" }, { "X-Request-Id": requestId });
+    return;
+  }
+
+  sendJson(response, 404, { error: "분석 API 주소를 찾을 수 없습니다.", code: "NOT_FOUND" }, { "X-Request-Id": requestId });
 }
 
 async function serveStatic(request, response) {
@@ -190,7 +252,7 @@ async function main() {
 
   const server = createHttpServer(async (request, response) => {
     const requestPath = new URL(request.url, "http://localhost").pathname;
-    if (requestPath === "/api/ai-summarize") {
+    if (requestPath === "/api/ai-summarize" || requestPath.startsWith("/api/ai-summarize/")) {
       await handleAiRequest(request, response);
       return;
     }
