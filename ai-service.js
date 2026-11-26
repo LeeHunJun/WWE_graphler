@@ -6,6 +6,12 @@ import { buildDocumentChunks } from "./ai-chunks.js";
 const MODEL_NAME = "jitda-chat";
 const RESPONSE_RETRY_LIMIT = 2;
 const MAX_COMPLETION_TOKENS = 5000;
+// 큰 표는 여러 조각으로 나눠 AI를 부른다. 조각을 하나씩 차례로 부르면 조각 수 × 응답 시간이 걸려
+// 브라우저(150초)·배포 프록시 제한을 넘기므로, 몇 개씩 동시에 부르고 전체 마감 시간을 둔다.
+const CHUNK_CONCURRENCY = 4;
+const DEFAULT_DEADLINE_MS = 110000;
+const MODEL_CALL_TIMEOUT_MS = 120000;
+const MIN_CALL_BUDGET_MS = 8000;
 
 export class AiServiceError extends Error {
   constructor(code, message, diagnostic = null) {
@@ -157,7 +163,7 @@ function makeSystemPrompt({ contractText, dataContractText, sampleSpec }) {
   ].join("\n");
 }
 
-async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = null }) {
+async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = null, timeoutMs = MODEL_CALL_TIMEOUT_MS }) {
   let response;
   try {
     response = await fetchImpl(endpoint, {
@@ -171,11 +177,12 @@ async function callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens = nu
         messages,
         ...(Number.isInteger(maxTokens) ? { max_completion_tokens: maxTokens } : {}),
       }),
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.timeout(Math.max(1000, Math.min(MODEL_CALL_TIMEOUT_MS, timeoutMs))),
     });
-  } catch {
-    throw new AiServiceError("AI_CALL_FAILED", "AI 서비스에 연결하지 못했습니다.", {
-      stage: "network_error",
+  } catch (error) {
+    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+    throw new AiServiceError("AI_CALL_FAILED", timedOut ? "AI 서비스 응답 시간이 초과되었습니다." : "AI 서비스에 연결하지 못했습니다.", {
+      stage: timedOut ? "timeout" : "network_error",
       retryable: true,
       response_length: 0,
       raw_response: "",
@@ -339,6 +346,8 @@ async function requestSingleChunk(document, {
   fetchImpl,
   chunkIndex,
   chunkCount,
+  deadline = Infinity,
+  now = Date.now,
 }) {
   const messages = [
     { role: "system", content: makeSystemPrompt({ contractText, dataContractText, sampleSpec }) },
@@ -355,8 +364,12 @@ async function requestSingleChunk(document, {
   for (let attempt = 0; attempt <= RESPONSE_RETRY_LIMIT; attempt += 1) {
     let modelResponse = null;
     let content = "";
+    const budget = deadline - now();
+    if (budget < MIN_CALL_BUDGET_MS) {
+      throw new AiServiceError("AI_TIMEOUT", "제한 시간 안에 이 조각을 요약하지 못했습니다.", { stage: "deadline", retryable: false });
+    }
     try {
-      modelResponse = await callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens: MAX_COMPLETION_TOKENS });
+      modelResponse = await callModel({ endpoint, apiKey, messages, fetchImpl, maxTokens: MAX_COMPLETION_TOKENS, timeoutMs: budget });
       content = modelResponse.content;
       const parsed = parseAiEnvelope(content, availableSources);
       const invalidReason = validateAiEnvelope(parsed, availableSources);
@@ -433,6 +446,9 @@ export async function requestAiSummary(document, {
   dataContractText = "",
   onDiagnostic,
   fetchImpl = fetch,
+  deadlineMs = DEFAULT_DEADLINE_MS,
+  concurrency = CHUNK_CONCURRENCY,
+  now = Date.now,
 } = {}) {
   if (!apiKey) throw new AiServiceError("AI_NOT_CONFIGURED", "LLM_API_KEY 환경변수가 설정되지 않았습니다.");
   if (!baseUrl) throw new AiServiceError("AI_NOT_CONFIGURED", "LLM_BASE_URL 환경변수가 설정되지 않았습니다.");
@@ -443,31 +459,52 @@ export async function requestAiSummary(document, {
 
   const endpoint = resolveChatCompletionsUrl(baseUrl);
   const chunks = buildDocumentChunks(document);
-  const successful = [];
+  const deadline = now() + deadlineMs;
+  const results = new Array(chunks.length).fill(null);
   const failures = [];
+  let configurationError = null;
+  let nextIndex = 0;
 
-  for (let index = 0; index < chunks.length; index += 1) {
-    try {
-      const result = await requestSingleChunk({ ...document, sources: chunks[index] }, {
-        apiKey,
-        endpoint,
-        contractText,
-        dataContractText,
-        sampleSpec,
-        fetchImpl,
-        chunkIndex: index + 1,
-        chunkCount: chunks.length,
-        onDiagnostic,
-      });
-      successful.push(result);
-    } catch (error) {
-      const configurationError = toConfigurationError(error);
-      if (configurationError) throw configurationError;
-      failures.push(error);
+  // 조각을 몇 개씩 동시에 요약한다. 주소·키 오류가 나오면 남은 조각은 부르지 않는다.
+  async function worker() {
+    while (nextIndex < chunks.length && !configurationError) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (deadline - now() < MIN_CALL_BUDGET_MS) {
+        failures.push(new AiServiceError("AI_TIMEOUT", "제한 시간 안에 이 조각을 요약하지 못했습니다."));
+        continue;
+      }
+      try {
+        results[index] = await requestSingleChunk({ ...document, sources: chunks[index] }, {
+          apiKey,
+          endpoint,
+          contractText,
+          dataContractText,
+          sampleSpec,
+          fetchImpl,
+          chunkIndex: index + 1,
+          chunkCount: chunks.length,
+          onDiagnostic,
+          deadline,
+          now,
+        });
+      } catch (error) {
+        configurationError ||= toConfigurationError(error);
+        failures.push(error);
+      }
     }
   }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, chunks.length)) }, worker));
+  if (configurationError) throw configurationError;
+  const successful = results.filter(Boolean);
 
   if (successful.length === 0) {
+    if (failures.some((error) => error?.code === "AI_TIMEOUT" || error?.diagnostic?.stage === "timeout")) {
+      throw new AiServiceError(
+        "AI_TIMEOUT",
+        `문서가 커서 AI가 제한 시간 안에 요약을 끝내지 못했어요 (${chunks.length}개 조각). 질문창으로 필요한 부분만 물어보시거나, 잠시 후 다시 시도해 주세요.`,
+      );
+    }
     const lastError = failures.at(-1);
     if (lastError?.code === "AI_CALL_FAILED") throw new AiServiceError("AI_CALL_FAILED", "잠시 후 다시 시도해 주세요");
     throw new AiServiceError("AI_RESPONSE_INVALID", "잠시 후 다시 시도해 주세요");

@@ -872,3 +872,53 @@ test("API 키가 거부되면(401) 키를 확인하라고 안내한다", async (
     (error) => error.code === "AI_NOT_CONFIGURED" && error.message.includes("LLM_API_KEY"),
   );
 });
+
+function largeDocument(rowCount) {
+  return {
+    name: "큰표.csv",
+    type: "csv",
+    sources: [
+      { source_id: "sheet:0:row:1", text: "항목 | 값" },
+      ...Array.from({ length: rowCount }, (_, index) => ({ source_id: `sheet:0:row:${index + 2}`, text: `항목${index + 1} | ${index + 1}` })),
+    ],
+  };
+}
+
+test("큰 표의 조각은 한 번에 최대 4개씩 동시에 요약한다", async () => {
+  let active = 0;
+  let peak = 0;
+  let calls = 0;
+  await requestAiSummary(largeDocument(300), {
+    ...options,
+    fetchImpl: async () => {
+      calls += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return new Response("{}", { status: 500, headers: { "Content-Type": "application/json" } });
+    },
+  }).catch(() => {});
+  assert.ok(calls >= 8, `조각마다 호출 (${calls})`);
+  assert.equal(peak, 4);
+});
+
+test("전체 마감 시간이 지나면 남은 조각을 부르지 않고 시간 초과를 알려 준다", async () => {
+  let clock = 0;
+  let calls = 0;
+  await assert.rejects(
+    requestAiSummary(largeDocument(300), {
+      ...options,
+      deadlineMs: 60000,
+      concurrency: 1,
+      now: () => clock,
+      fetchImpl: async () => {
+        calls += 1;
+        clock += 50000;
+        return new Response("{}", { status: 500, headers: { "Content-Type": "application/json" } });
+      },
+    }),
+    (error) => error.code === "AI_TIMEOUT" && error.message.includes("제한 시간"),
+  );
+  assert.ok(calls <= 2, `마감 뒤에는 부르지 않음 (${calls})`);
+});

@@ -133,6 +133,7 @@ async function handleAiRequest(request, response) {
       : "AI 서비스 요청에 실패했습니다. 다시 시도해 주세요.";
     const status = code === "INVALID_DOCUMENT" ? 400
       : code === "NO_ANALYZABLE_CONTENT" ? 422
+        : code === "AI_TIMEOUT" ? 504
         : code === "AI_NOT_CONFIGURED" || code === "AI_RESPONSE_INVALID" || code === "AI_CALL_FAILED" ? 503
           : 502;
     sendJson(response, status, { error: message, code });
