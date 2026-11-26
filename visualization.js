@@ -1117,8 +1117,9 @@ function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, 
     target?.classList.add("visual-data-highlighted");
   }
 
-  const firstSourceId = highlight.source_ids[0];
-  if (firstSourceId) onNavigate?.(firstSourceId);
+  // 중요한 부분을 누르면 화면을 미리보기로 옮기지 않고, 펼친 설명이 보이는 곳에 머문다.
+  // 원본 행으로 가고 싶을 때만 아래 '원본 위치' 버튼을 누르면 된다.
+  detail.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
 }
 
 function renderHighlights(card, visual, highlights, sourceLookup, onNavigate, sourceDocument = null) {
