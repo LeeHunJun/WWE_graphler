@@ -3,8 +3,13 @@ import { hasOnlySupportedNumbers, hasSupportedNumericValue, isSupportedByEvidenc
 import { validateAiQuality } from "./ai-quality.js";
 import { renderDriverPanel } from "./driver-view.js";
 import { renderHandoverPanel } from "./handover-view.js";
+import { initWorkspace } from "./workspace.js";
+import { ensureSignedIn, signOut, updateProfile } from "./auth.js";
 
-const DATABASE_NAME = "grappler-local-documents";
+const LEGACY_DATABASE_NAME = "grappler-local-documents";
+const LEGACY_OWNER_KEY = "grappler-legacy-documents-owner";
+// 같은 브라우저를 여러 계정이 써도 내 문서 보관함이 섞이지 않게 계정별로 저장소를 나눈다.
+let databaseName = LEGACY_DATABASE_NAME;
 const DATABASE_VERSION = 1;
 const STORE_NAME = "documents";
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -52,6 +57,7 @@ const aiSummaryRetryButton = document.querySelector("#ai-summary-retry");
 const loadSampleSpecButton = document.querySelector("#load-sample-spec");
 const developerTools = document.querySelector("#developer-tools");
 const toast = document.querySelector("#toast");
+const saveInsightButton = document.querySelector("#save-insight-button");
 const deleteDocumentDialog = document.querySelector("#delete-document-dialog");
 const deleteDocumentFileName = document.querySelector("#delete-document-file-name");
 const cancelDeleteDocumentButton = document.querySelector("#cancel-delete-document");
@@ -67,6 +73,7 @@ let isLoadingSample = false;
 let pendingDeleteDocumentId = null;
 let isDeletingDocument = false;
 let toastTimer;
+let workspace = null;
 const searchCache = new Map();
 const aiLoadingDocuments = new Set();
 const aiErrors = new Map();
@@ -100,7 +107,7 @@ function openDatabase() {
         return;
       }
 
-      const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+      const request = indexedDB.open(databaseName, DATABASE_VERSION);
       request.onupgradeneeded = () => {
         const database = request.result;
         if (!database.objectStoreNames.contains(STORE_NAME)) {
@@ -470,6 +477,13 @@ function createDocumentRow(record) {
   typeBadge.className = "file-type";
   typeBadge.textContent = typeInfo.label;
   nameLine.append(name, typeBadge);
+  if (record.sharedFrom) {
+    const sharedBadge = document.createElement("span");
+    sharedBadge.className = "file-type shared-origin-badge";
+    sharedBadge.textContent = "팀 공유";
+    sharedBadge.title = `${record.sharedFrom.workspaceName || "팀"} · ${record.sharedFrom.sharedBy || "팀원"} 님이 공유`;
+    nameLine.append(sharedBadge);
+  }
   const summary = document.createElement("span");
   summary.className = "document-summary";
   summary.textContent = getDocumentSummary(record);
@@ -503,7 +517,16 @@ function createDocumentRow(record) {
   deleteButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2m3 0-.7 10H5.7L5 6m3 3v4m4-4v4" /></svg>';
   deleteButton.addEventListener("click", () => openDeleteDocumentDialog(record));
 
-  row.append(selectButton, deleteButton);
+  const shareButton = document.createElement("button");
+  shareButton.type = "button";
+  shareButton.className = "document-share-button";
+  shareButton.classList.toggle("is-shared", Boolean(workspace?.isSharedDocument(record)));
+  shareButton.setAttribute("aria-label", `${record.name} 팀에 공유`);
+  shareButton.title = workspace?.isSharedDocument(record) ? "팀에 공유됨 · 다시 공유" : "팀 워크스페이스에 공유";
+  shareButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="10" r="2.5" /><circle cx="14.5" cy="5" r="2.5" /><circle cx="14.5" cy="15" r="2.5" /><path d="m8.2 8.8 4-2.5M8.2 11.2l4 2.5" /></svg>';
+  shareButton.addEventListener("click", () => workspace?.openShareDialog(record));
+
+  row.append(selectButton, shareButton, deleteButton);
   return row;
 }
 
@@ -1101,6 +1124,7 @@ function renderSelectedVisuals(record) {
   };
   if (!record) {
     renderVisuals(fallbackSpec, { container: visualizationOutput });
+    if (saveInsightButton) saveInsightButton.disabled = true;
     renderAiSummary(null);
     renderDriverPanel(null);
     renderHandoverPanel(null);
@@ -1118,6 +1142,7 @@ function renderSelectedVisuals(record) {
     };
 
   renderAiSummary(record);
+  if (saveInsightButton) saveInsightButton.disabled = false;
   renderVisuals(spec, {
     container: visualizationOutput,
     sourceDocument: record,
@@ -1405,34 +1430,127 @@ window.grappler = {
   },
 };
 
+// 저장된(또는 팀에서 받은) 문서를 화면에 쓰기 전에 시각화 명세와 AI 결과를 다시 확인한다.
+function prepareStoredRecord(record) {
+  let needsSave = false;
+  if (!Object.hasOwn(record, "visualSpec")) {
+    record.visualSpec = record.type === "pdf"
+      ? { status: "ok", message: "AI 요약 연결 후 시각화가 표시됩니다", visuals: [] }
+      : buildSpreadsheetVisualizationSpec(record);
+    needsSave = true;
+  }
+
+  if (record.aiSummary) {
+    try {
+      const completedAt = record.aiSummary.completedAt;
+      const normalized = normalizeAiSummary(record.aiSummary, record);
+      record.aiSummary = {
+        ...normalized,
+        completedAt: completedAt || normalized.completedAt,
+      };
+    } catch {
+      delete record.aiSummary;
+      aiErrors.set(record.id, "저장된 AI 결과가 원문 검증을 통과하지 않아 숨겼습니다. 다시 요약해 주세요.");
+      needsSave = true;
+    }
+  }
+  return needsSave;
+}
+
+// 팀 공유 문서를 내 문서 보관함(IndexedDB)으로 가져온다. 같은 공유 문서는 같은 id로 덮어쓴다.
+async function importSharedDocument(record) {
+  if (!record || !["pdf", "csv", "excel"].includes(record.type)) throw new Error("가져올 수 없는 문서 형식이에요.");
+  if (record.type === "pdf" ? !Array.isArray(record.pages) : !Array.isArray(record.sheets)) {
+    throw new Error("공유 문서 내용이 올바르지 않아요.");
+  }
+  record.pageCount = record.pageCount || record.pages?.length || 0;
+  record.pages = record.pages || [];
+  record.sheets = record.sheets || [];
+  prepareStoredRecord(record);
+  try {
+    await saveDocument(record);
+  } catch {
+    throw new Error("브라우저 저장 공간에 문서를 보관하지 못했어요.");
+  }
+  documents = [record, ...documents.filter((item) => item.id !== record.id)];
+  searchCache.delete(record.id);
+  activeFilter = "all";
+  searchInput.value = "";
+  syncFilters();
+  renderDocuments();
+}
+
+// 로그인 기능 이전에 이 브라우저에 저장한 문서는, 이 브라우저에서 처음 로그인한 계정의 보관함으로 옮긴다.
+async function claimLegacyDocuments(user) {
+  let owner = null;
+  try {
+    owner = window.localStorage.getItem(LEGACY_OWNER_KEY);
+  } catch {
+    return;
+  }
+  if (owner || !("indexedDB" in window)) return;
+  try {
+    if (indexedDB.databases) {
+      const names = (await indexedDB.databases()).map((item) => item.name);
+      if (!names.includes(LEGACY_DATABASE_NAME)) {
+        window.localStorage.setItem(LEGACY_OWNER_KEY, user.id);
+        return;
+      }
+    }
+    const legacy = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(LEGACY_DATABASE_NAME, DATABASE_VERSION);
+      request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const records = await new Promise((resolve, reject) => {
+      const request = legacy.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    legacy.close();
+    for (const record of records) await saveDocument(record);
+    window.localStorage.setItem(LEGACY_OWNER_KEY, user.id);
+  } catch {
+    // 옮기지 못하면 다음 로그인 때 다시 시도한다.
+  }
+}
+
+function startWorkspace(user) {
+  workspace = initWorkspace({
+    user,
+    signOut,
+    updateProfile,
+    onSignedOut: () => window.location.reload(),
+    showToast,
+    getDocuments: () => documents,
+    getSelectedDocument: () => documents.find((item) => item.id === selectedDocumentId) || null,
+    getVisualSpec: (record) => (record.aiSummary ? getCombinedVisualSpec(record) : record.visualSpec),
+    importDocument: importSharedDocument,
+    openDocument: (id) => {
+      if (selectedDocumentId === id) {
+        renderDocuments();
+        const record = documents.find((item) => item.id === id);
+        if (record) {
+          renderPreview(record);
+          renderSelectedVisuals(record);
+        }
+      } else {
+        selectDocument(id);
+      }
+      document.querySelector("#analysis")?.scrollIntoView({ block: "start" });
+    },
+    onWorkspaceChange: () => {
+      if (!isLoadingDocuments) renderDocuments();
+    },
+  });
+}
+
 async function init() {
   try {
     documents = await getStoredDocuments();
     for (const record of documents) {
-      let needsSave = false;
-      if (!Object.hasOwn(record, "visualSpec")) {
-        record.visualSpec = record.type === "pdf"
-          ? { status: "ok", message: "AI 요약 연결 후 시각화가 표시됩니다", visuals: [] }
-          : buildSpreadsheetVisualizationSpec(record);
-        needsSave = true;
-      }
-
-      if (record.aiSummary) {
-        try {
-          const completedAt = record.aiSummary.completedAt;
-          const normalized = normalizeAiSummary(record.aiSummary, record);
-          record.aiSummary = {
-            ...normalized,
-            completedAt: completedAt || normalized.completedAt,
-          };
-        } catch {
-          delete record.aiSummary;
-          aiErrors.set(record.id, "저장된 AI 결과가 원문 검증을 통과하지 않아 숨겼습니다. 다시 요약해 주세요.");
-          needsSave = true;
-        }
-      }
-
-      if (needsSave) await saveDocument(record);
+      if (prepareStoredRecord(record)) await saveDocument(record);
     }
   } catch (error) {
     setUploadStatus(error.message || "저장된 문서를 불러오지 못했습니다.", "error");
@@ -1444,4 +1562,12 @@ async function init() {
   else renderSelectedVisuals(null);
 }
 
-init();
+async function startApp() {
+  const user = await ensureSignedIn();
+  databaseName = `${LEGACY_DATABASE_NAME}--${user.id}`;
+  await claimLegacyDocuments(user);
+  startWorkspace(user);
+  await init();
+}
+
+startApp();

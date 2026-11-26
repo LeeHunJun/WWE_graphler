@@ -4,12 +4,20 @@ import { appendFile, mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AiServiceError, requestAiSummary } from "./ai-service.js";
+import { handleAuthApi, isAuthApiPath } from "./auth-api.js";
+import { createAuthStore } from "./auth-store.js";
+import { handleWorkspaceApi, isWorkspaceApiPath } from "./workspace-api.js";
+import { createWorkspaceStore } from "./workspace-store.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(ROOT, "dist");
 const DIAGNOSTIC_LOG = path.join(ROOT, ".opencode", "ai-response-diagnostics.jsonl");
 const DIAGNOSTIC_LOG_LIMIT = 4 * 1024 * 1024;
 const BODY_LIMIT = 16 * 1024 * 1024;
+// 계정·로그인과 팀 워크스페이스(공유 문서·저장한 인사이트·팀 설정)는 서버의 JSON 파일에 저장한다.
+const WORKSPACE_DATA_DIR = process.env.GRAPPLER_DATA_DIR || path.join(ROOT, ".data");
+const workspaceStore = createWorkspaceStore({ dataDir: WORKSPACE_DATA_DIR });
+const authStore = createAuthStore({ dataDir: WORKSPACE_DATA_DIR });
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
@@ -171,6 +179,16 @@ async function main() {
     const requestPath = new URL(request.url, "http://localhost").pathname;
     if (requestPath === "/api/ai-summarize") {
       await handleAiRequest(request, response);
+      return;
+    }
+
+    if (isAuthApiPath(requestPath)) {
+      await handleAuthApi(request, response, { authStore, workspaceStore });
+      return;
+    }
+
+    if (isWorkspaceApiPath(requestPath)) {
+      await handleWorkspaceApi(request, response, { workspaceStore, authStore });
       return;
     }
 

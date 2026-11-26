@@ -8,6 +8,44 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <div class="auth-screen" id="auth-screen" hidden>
+      <div class="auth-card">
+        <div class="auth-brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 36 36" fill="none">
+              <path d="M10 11.5 25.5 9l-3 16L10 11.5Z" />
+              <path d="m10 11.5 12.5 13.5M25.5 9l-15.5 2.5" />
+              <circle cx="10" cy="11.5" r="3" />
+              <circle cx="25.5" cy="9" r="3" />
+              <circle cx="22.5" cy="25" r="3" />
+            </svg>
+          </span>
+          <span class="brand-word">grappler<span>.</span></span>
+        </div>
+        <h1>업무 자료를 팀과 함께 읽어요</h1>
+        <p class="auth-lead">로그인하면 팀 워크스페이스에서 문서를 공유하고, 중요한 인사이트를 모아 둘 수 있어요.</p>
+        <div class="auth-tabs" role="tablist" aria-label="로그인 또는 회원가입">
+          <button type="button" role="tab" class="is-selected" aria-selected="true" data-auth-mode="login">로그인</button>
+          <button type="button" role="tab" aria-selected="false" data-auth-mode="signup">회원가입</button>
+        </div>
+        <p class="form-error auth-status" id="auth-status" role="alert" hidden></p>
+        <form class="team-form auth-form" id="login-form" novalidate>
+          <label class="team-field"><span>아이디</span><input name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required /></label>
+          <label class="team-field"><span>비밀번호</span><input name="password" type="password" autocomplete="current-password" required /></label>
+          <p class="form-error" role="alert" hidden></p>
+          <button class="team-primary-button auth-submit" type="submit">로그인</button>
+        </form>
+        <form class="team-form auth-form" id="signup-form" novalidate hidden>
+          <label class="team-field"><span>이름 (팀원에게 보이는 이름)</span><input name="name" maxlength="30" autocomplete="name" required /></label>
+          <label class="team-field"><span>아이디 (영문·숫자·_ 4~20자)</span><input name="username" maxlength="20" autocomplete="username" autocapitalize="off" spellcheck="false" required /></label>
+          <label class="team-field"><span>비밀번호 (6자 이상)</span><input name="password" type="password" autocomplete="new-password" required /></label>
+          <label class="team-field"><span>비밀번호 확인</span><input name="passwordConfirm" type="password" autocomplete="new-password" required /></label>
+          <p class="form-error" role="alert" hidden></p>
+          <button class="team-primary-button auth-submit" type="submit">프로필 만들고 시작하기</button>
+        </form>
+      </div>
+    </div>
+
     <div class="app-shell">
       <aside class="sidebar" aria-label="주 탐색">
         <a class="brand" href="#overview" aria-label="Grappler 홈">
@@ -23,20 +61,23 @@
           <span class="brand-word">grappler<span>.</span></span>
         </a>
 
-        <button class="workspace-switch" type="button" data-toast="팀 워크스페이스 전환은 다음 단계에서 추가할 수 있어요.">
-          <span class="workspace-avatar" aria-hidden="true">P</span>
-          <span class="workspace-copy">
-            <span class="workspace-label">WORKSPACE</span>
-            <span class="workspace-name">프로덕트 팀</span>
-          </span>
-          <svg class="chevron-icon" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="m4 6 4 4 4-4" />
-          </svg>
-        </button>
+        <div class="workspace-switch-wrap">
+          <button class="workspace-switch" id="workspace-switch" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="workspace-menu">
+            <span class="workspace-avatar" id="workspace-avatar" aria-hidden="true">P</span>
+            <span class="workspace-copy">
+              <span class="workspace-label">WORKSPACE</span>
+              <span class="workspace-name" id="workspace-name">불러오는 중</span>
+            </span>
+            <svg class="chevron-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="m4 6 4 4 4-4" />
+            </svg>
+          </button>
+          <div class="popover-menu workspace-menu" id="workspace-menu" role="menu" aria-label="워크스페이스 전환" hidden></div>
+        </div>
 
         <nav class="side-nav">
           <p class="nav-label">워크스페이스</p>
-          <a class="nav-item is-active" href="#overview" aria-current="page">
+          <a class="nav-item is-active" href="#overview" data-view="overview" aria-current="page">
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <rect x="3" y="3" width="5.5" height="5.5" rx="1" />
               <rect x="11.5" y="3" width="5.5" height="3.5" rx="1" />
@@ -53,7 +94,7 @@
             <span>문서 보관함</span>
             <span class="nav-count" id="sidebar-document-count">0</span>
           </a>
-          <button class="nav-item" type="button" data-toast="공유 문서는 기능 확장 단계에서 연결할 수 있어요.">
+          <a class="nav-item" href="#shared" data-view="shared">
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <circle cx="6" cy="10" r="2.5" />
               <circle cx="14.5" cy="5" r="2.5" />
@@ -61,14 +102,16 @@
               <path d="m8.2 8.8 4-2.5M8.2 11.2l4 2.5" />
             </svg>
             <span>공유 문서</span>
-          </button>
-          <button class="nav-item" type="button" data-toast="저장한 인사이트는 기능 확장 단계에서 연결할 수 있어요.">
+            <span class="nav-count" id="sidebar-shared-count">0</span>
+          </a>
+          <a class="nav-item" href="#insights" data-view="insights">
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <path d="M5 3.5A1.5 1.5 0 0 1 6.5 2h7A1.5 1.5 0 0 1 15 3.5V18l-5-3-5 3V3.5Z" />
               <path d="M7.5 6h5" />
             </svg>
             <span>저장한 인사이트</span>
-          </button>
+            <span class="nav-count" id="sidebar-insight-count">0</span>
+          </a>
         </nav>
 
         <div class="sidebar-bottom">
@@ -81,12 +124,12 @@
             </span>
             <p>긴 문서의 핵심을<br /><strong>시각적으로 정리해요.</strong></p>
           </div>
-          <button class="nav-item sidebar-settings" type="button" data-toast="팀 설정은 기능 확장 단계에서 추가할 수 있어요.">
+          <button class="nav-item sidebar-settings" id="open-team-settings" type="button">
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <circle cx="10" cy="10" r="3" />
               <path d="m16.2 11.8 1.1.9-1.4 2.4-1.4-.5a6.8 6.8 0 0 1-1.7 1l-.3 1.5h-2.8l-.3-1.5a6.8 6.8 0 0 1-1.7-1l-1.4.5-1.4-2.4 1.1-.9a6.3 6.3 0 0 1 0-2l-1.1-.9 1.4-2.4 1.4.5a6.8 6.8 0 0 1 1.7-1l.3-1.5h2.8l.3 1.5a6.8 6.8 0 0 1 1.7 1l1.4-.5 1.4 2.4-1.1.9a6.3 6.3 0 0 1 0 2Z" />
             </svg>
-            <span>설정</span>
+            <span>팀 설정</span>
           </button>
           <div class="sidebar-footnote">Grappler workspace <span>v0.1</span></div>
         </div>
@@ -95,9 +138,9 @@
       <div class="main-shell">
         <header class="topbar">
           <div class="breadcrumbs" aria-label="현재 위치">
-            <span>프로덕트 팀</span>
+            <span id="breadcrumb-workspace">프로덕트 팀</span>
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
-            <strong>개요</strong>
+            <strong id="breadcrumb-current">개요</strong>
           </div>
           <div class="topbar-actions">
             <label class="search-control">
@@ -115,11 +158,14 @@
               </svg>
               <span class="notification-dot" aria-hidden="true"></span>
             </button>
-            <button class="user-chip" type="button" data-toast="프로필 메뉴는 기능 확장 단계에서 추가할 수 있어요.">
-              <span class="user-avatar" aria-hidden="true">김</span>
-              <span class="user-name">김지은</span>
-              <svg class="chevron-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
-            </button>
+            <div class="user-chip-wrap">
+              <button class="user-chip" id="user-chip" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="profile-menu">
+                <span class="user-avatar" id="user-avatar" aria-hidden="true">?</span>
+                <span class="user-name" id="user-name">프로필</span>
+                <svg class="chevron-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+              </button>
+              <div class="popover-menu profile-menu" id="profile-menu" role="menu" aria-label="프로필 메뉴" hidden></div>
+            </div>
           </div>
         </header>
 
@@ -274,6 +320,10 @@
                   <h2 id="visualizations-title">시각화</h2>
                 </div>
                 <div class="visualization-actions">
+                  <button class="save-insight-button" id="save-insight-button" type="button" disabled>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5A1.5 1.5 0 0 1 6.5 2h7A1.5 1.5 0 0 1 15 3.5V18l-5-3-5 3V3.5Z" /></svg>
+                    <span>인사이트 저장</span>
+                  </button>
                   <button class="ai-summary-button" id="ai-summarize-button" type="button" disabled>
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v3M10 14.5v3M2.5 10h3M14.5 10h3M4.7 4.7l2.1 2.1m6.4 6.4 2.1 2.1m0-10.6-2.1 2.1m-6.4 6.4-2.1 2.1"/><circle cx="10" cy="10" r="3.25"/></svg>
                     <span id="ai-summarize-label">AI 요약</span>
@@ -357,6 +407,44 @@
             </section>
           </div>
 
+          <section class="team-view" id="shared-view" aria-labelledby="shared-view-title" hidden>
+            <div class="team-view-heading">
+              <div>
+                <p class="eyebrow">TEAM SHARED <span class="eyebrow-line"></span> DOCUMENTS</p>
+                <h1 id="shared-view-title">공유 문서</h1>
+                <p class="page-description" id="shared-workspace-label"></p>
+              </div>
+              <button class="subtle-button" type="button" data-go-view="overview">내 문서 보관함으로</button>
+            </div>
+            <label class="team-search">
+              <span class="visually-hidden">공유 문서 검색</span>
+              <input id="shared-search" type="search" placeholder="문서 이름, 메모, 공유한 사람 검색" autocomplete="off" />
+            </label>
+            <div class="team-card-list" id="shared-list" aria-live="polite"></div>
+          </section>
+
+          <section class="team-view" id="insights-view" aria-labelledby="insights-view-title" hidden>
+            <div class="team-view-heading">
+              <div>
+                <p class="eyebrow">SAVED <span class="eyebrow-line"></span> INSIGHTS</p>
+                <h1 id="insights-view-title">저장한 인사이트</h1>
+                <p class="page-description" id="insights-workspace-label"></p>
+              </div>
+              <button class="subtle-button" type="button" data-go-view="overview">시각화로 돌아가기</button>
+            </div>
+            <div class="team-toolbar">
+              <div class="filter-list" role="group" aria-label="인사이트 필터">
+                <button class="filter-chip is-selected" type="button" data-insight-filter="all" aria-pressed="true">팀 전체</button>
+                <button class="filter-chip" type="button" data-insight-filter="mine" aria-pressed="false">내가 저장한 것</button>
+              </div>
+              <label class="team-search">
+                <span class="visually-hidden">인사이트 검색</span>
+                <input id="insight-search" type="search" placeholder="제목, 문서, 내용 검색" autocomplete="off" />
+              </label>
+            </div>
+            <div class="team-card-list" id="insight-list" aria-live="polite"></div>
+          </section>
+
           <footer class="page-footer">
             <span class="footer-mark" aria-hidden="true">
               <svg viewBox="0 0 20 20"><path d="m5 6 9-.8-1.6 9L5 6Z" /><path d="m5 6 7.4 8.2M14 5.2 5 6" /><circle cx="5" cy="6" r="1.5" /><circle cx="14" cy="5.2" r="1.5" /><circle cx="12.4" cy="15" r="1.5" /></svg>
@@ -384,6 +472,127 @@
           <button class="delete-confirm-button" id="confirm-delete-document" type="button">삭제</button>
         </div>
       </div>
+    </dialog>
+    <dialog class="team-dialog" id="profile-dialog" aria-labelledby="profile-dialog-title">
+      <form class="team-form" id="profile-form" method="dialog" novalidate>
+        <p class="mini-eyebrow">PROFILE</p>
+        <h2 id="profile-dialog-title">프로필 편집</h2>
+        <p class="team-form-help">팀원에게 이 이름으로 보여요. 비밀번호를 바꿀 때는 현재 비밀번호가 필요해요.</p>
+        <label class="team-field"><span>이름</span><input name="name" maxlength="30" required autocomplete="name" /></label>
+        <label class="team-field"><span>아이디 (바꿀 수 없어요)</span><input name="username" readonly autocomplete="username" /></label>
+        <label class="team-field"><span>새 비밀번호 (바꿀 때만)</span><input name="newPassword" type="password" autocomplete="new-password" /></label>
+        <label class="team-field"><span>새 비밀번호 확인</span><input name="newPasswordConfirm" type="password" autocomplete="new-password" /></label>
+        <label class="team-field"><span>현재 비밀번호</span><input name="currentPassword" type="password" autocomplete="current-password" /></label>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="team-form-actions">
+          <button class="team-ghost-button" type="button" data-close-dialog>취소</button>
+          <button class="team-primary-button" type="submit">저장</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="team-dialog" id="workspace-create-dialog" aria-labelledby="workspace-create-title">
+      <form class="team-form" id="workspace-create-form" method="dialog" novalidate>
+        <p class="mini-eyebrow">NEW WORKSPACE</p>
+        <h2 id="workspace-create-title">새 워크스페이스 만들기</h2>
+        <p class="team-form-help">만든 사람이 관리자가 돼요. 팀 설정에서 초대 링크를 복사해 팀원을 부를 수 있어요.</p>
+        <label class="team-field"><span>이름</span><input name="name" maxlength="40" required placeholder="예: 영업 1팀" /></label>
+        <label class="team-field"><span>설명 (선택)</span><textarea name="description" maxlength="200" rows="2" placeholder="이 워크스페이스에서 다루는 자료"></textarea></label>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="team-form-actions">
+          <button class="team-ghost-button" type="button" data-close-dialog>취소</button>
+          <button class="team-primary-button" type="submit">만들기</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="team-dialog team-settings-dialog" id="team-settings-dialog" aria-labelledby="team-settings-title">
+      <div class="team-settings-body">
+        <div class="team-settings-header">
+          <div>
+            <p class="mini-eyebrow">TEAM SETTINGS</p>
+            <h2 id="team-settings-title">팀 설정</h2>
+            <p class="team-form-help" id="team-settings-role"></p>
+          </div>
+          <button class="team-icon-button" type="button" data-close-dialog aria-label="닫기">닫기</button>
+        </div>
+        <form class="team-form" id="team-settings-form" novalidate>
+          <h3>기본 정보</h3>
+          <label class="team-field"><span>워크스페이스 이름</span><input name="name" maxlength="40" required /></label>
+          <label class="team-field"><span>설명</span><textarea name="description" maxlength="200" rows="2"></textarea></label>
+          <fieldset class="team-color-field">
+            <legend>대표 색상</legend>
+            <label><input type="radio" name="color" value="forest" /><span data-color="forest">숲</span></label>
+            <label><input type="radio" name="color" value="blue" /><span data-color="blue">파랑</span></label>
+            <label><input type="radio" name="color" value="coral" /><span data-color="coral">코랄</span></label>
+            <label><input type="radio" name="color" value="violet" /><span data-color="violet">보라</span></label>
+            <label><input type="radio" name="color" value="amber" /><span data-color="amber">앰버</span></label>
+          </fieldset>
+          <h3>권한</h3>
+          <label class="team-check"><input type="checkbox" name="allowEditorShare" /><span>편집자도 문서를 팀에 공유할 수 있어요</span></label>
+          <label class="team-check"><input type="checkbox" name="allowViewerInsights" /><span>보기 전용 멤버도 인사이트를 저장할 수 있어요</span></label>
+          <p class="form-error" role="alert" hidden></p>
+          <div class="team-form-actions">
+            <button class="team-primary-button" type="submit">설정 저장</button>
+          </div>
+        </form>
+        <section class="team-settings-section" aria-labelledby="team-members-title">
+          <h3 id="team-members-title">멤버 <span id="team-member-count"></span></h3>
+          <div class="team-invite">
+            <label class="team-field"><span>초대 링크</span><input id="team-invite-link" readonly /></label>
+            <button class="team-ghost-button" id="team-copy-invite" type="button">복사</button>
+          </div>
+          <ul class="team-member-list" id="team-member-list"></ul>
+        </section>
+        <section class="team-settings-section team-danger-zone" aria-label="워크스페이스 나가기 또는 삭제">
+          <button class="team-ghost-button" id="team-leave-workspace" type="button">워크스페이스 나가기</button>
+          <button class="team-ghost-button is-danger" id="team-delete-workspace" type="button">워크스페이스 삭제</button>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog class="team-dialog" id="share-document-dialog" aria-labelledby="share-document-title">
+      <form class="team-form" id="share-document-form" method="dialog" novalidate>
+        <p class="mini-eyebrow">SHARE DOCUMENT</p>
+        <h2 id="share-document-title">팀에 문서 공유</h2>
+        <p class="team-form-help"><strong id="share-document-name"></strong> 문서의 읽은 내용·시각화·AI 요약을 <strong id="share-document-workspace"></strong> 멤버 모두가 볼 수 있게 서버에 올려요.</p>
+        <p class="team-form-warning" id="share-document-warning" hidden>이미 공유한 문서예요. 다시 공유하면 새 항목으로 하나 더 올라가요.</p>
+        <label class="team-field"><span>메모 (선택)</span><textarea name="note" maxlength="500" rows="3" placeholder="예: 3월 매출 하락 원인 같이 봐 주세요"></textarea></label>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="team-form-actions">
+          <button class="team-ghost-button" type="button" data-close-dialog>취소</button>
+          <button class="team-primary-button" type="submit">공유</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="team-dialog save-insight-dialog" id="save-insight-dialog" aria-labelledby="save-insight-title">
+      <form class="team-form" id="save-insight-form" method="dialog" novalidate>
+        <p class="mini-eyebrow">SAVE INSIGHT</p>
+        <h2 id="save-insight-title">인사이트 저장</h2>
+        <p class="team-form-help"><strong id="save-insight-document"></strong>에서 기억해 둘 강조 내용을 골라 팀 워크스페이스에 저장해요. 핵심·중요 항목은 미리 골라 두었어요.</p>
+        <label class="team-field"><span>제목</span><input name="title" maxlength="80" required /></label>
+        <div class="insight-candidate-list" id="save-insight-candidates"></div>
+        <label class="team-field"><span>메모 (선택)</span><textarea name="note" maxlength="500" rows="2" placeholder="다음 회의에서 확인할 점 등"></textarea></label>
+        <label class="team-check" id="save-insight-share-field"><input type="checkbox" name="shareDocument" /><span>팀원이 원본을 열 수 있게 문서도 함께 공유</span></label>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="team-form-actions">
+          <button class="team-ghost-button" type="button" data-close-dialog>취소</button>
+          <button class="team-primary-button" type="submit">저장</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="team-dialog team-confirm-dialog" id="team-confirm-dialog" aria-labelledby="team-confirm-title">
+      <form class="team-form" id="team-confirm-form" method="dialog" novalidate>
+        <h2 id="team-confirm-title"></h2>
+        <p class="team-form-help" id="team-confirm-message"></p>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="team-form-actions">
+          <button class="team-ghost-button" type="button" data-close-dialog>취소</button>
+          <button class="team-primary-button" type="submit">확인</button>
+        </div>
+      </form>
     </dialog>
     <script type="module" src="app.js"></script>
   </body>

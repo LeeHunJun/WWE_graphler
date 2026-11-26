@@ -7,3 +7,6 @@
 .env
 .env.*
 node_modules/
+
+# 팀 워크스페이스 서버 저장 파일
+.data/
