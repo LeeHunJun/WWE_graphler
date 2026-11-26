@@ -52,14 +52,48 @@ function send(response, status, payload, headers = {}) {
 }
 
 // 다른 사이트에서 로그인 쿠키를 이용해 요청을 보내지 못하게, 브라우저가 보낸 Origin이 이 서버와 같은지 확인한다.
+// 미리보기·배포 환경처럼 프록시 뒤에서 돌 때는 Host 헤더가 내부 주소(localhost:3000 등)로 바뀌므로
+// 브라우저가 직접 붙이는 Sec-Fetch-Site, 프록시가 넘겨주는 X-Forwarded-Host, ALLOWED_ORIGINS 환경변수도 함께 본다.
+function normalizeHost(value, protocol = "") {
+  const host = String(value || "").trim().toLowerCase();
+  if (protocol === "http:" && host.endsWith(":80")) return host.slice(0, -3);
+  if (protocol === "https:" && host.endsWith(":443")) return host.slice(0, -4);
+  return host;
+}
+
+function headerHosts(value) {
+  return String(value || "").split(",").map((part) => normalizeHost(part)).filter(Boolean);
+}
+
 export function isSameOrigin(request) {
-  const origin = request.headers.origin;
+  const headers = request.headers || {};
+  const fetchSite = String(headers["sec-fetch-site"] || "").toLowerCase();
+  if (fetchSite === "same-origin" || fetchSite === "none") return true;
+
+  const origin = headers.origin;
   if (!origin) return true;
+  let originUrl;
   try {
-    return new URL(origin).host === request.headers.host;
+    originUrl = new URL(origin);
   } catch {
     return false;
   }
+  const originHost = normalizeHost(originUrl.host, originUrl.protocol);
+
+  const allowed = new Set([
+    ...headerHosts(headers.host).map((host) => normalizeHost(host, originUrl.protocol)),
+    ...headerHosts(headers["x-forwarded-host"]).map((host) => normalizeHost(host, originUrl.protocol)),
+  ]);
+  for (const entry of String(process.env.ALLOWED_ORIGINS || "").split(",")) {
+    if (!entry.trim()) continue;
+    try {
+      const url = new URL(entry.trim());
+      allowed.add(normalizeHost(url.host, url.protocol));
+    } catch {
+      // 잘못 적힌 항목은 무시한다.
+    }
+  }
+  return allowed.has(originHost);
 }
 
 export function isAuthApiPath(pathname) {
