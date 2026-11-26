@@ -418,6 +418,26 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
       });
     },
 
+    // 내가 공유한 문서가 어느 워크스페이스에 올라가 있는지(내 문서 보관함 표시용). 지금도 멤버인 곳만 돌려준다.
+    async listMySharedDocuments(actorId) {
+      pruneExpiredGuestWorkspaces();
+      const id = cleanId(actorId);
+      return database.prepare(`
+        SELECT d.id, d.workspace_id, w.name AS workspace_name, d.origin_id, d.shared_at
+        FROM shared_documents AS d
+        INNER JOIN workspaces AS w ON w.id = d.workspace_id
+        INNER JOIN workspace_members AS m ON m.workspace_id = d.workspace_id AND m.member_id = d.shared_by_id
+        WHERE d.shared_by_id = ? AND d.origin_id IS NOT NULL
+        ORDER BY d.shared_at DESC, d.id
+      `).all(id).map((row) => ({
+        id: row.id,
+        workspaceId: row.workspace_id,
+        workspaceName: row.workspace_name,
+        originId: row.origin_id,
+        sharedAt: row.shared_at,
+      }));
+    },
+
     async listSharedDocuments(workspaceId) {
       pruneExpiredGuestWorkspaces();
       getWorkspaceRecord(workspaceId);

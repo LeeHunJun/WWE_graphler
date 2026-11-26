@@ -553,6 +553,14 @@ function createDocumentRow(record) {
     sharedBadge.title = `${record.sharedFrom.workspaceName || "팀"} · ${record.sharedFrom.sharedBy || "팀원"} 님이 공유`;
     nameLine.append(sharedBadge);
   }
+  const sharedTo = workspace?.sharedWorkspacesFor?.(record) || [];
+  if (sharedTo.length > 0) {
+    const sharedToBadge = document.createElement("span");
+    sharedToBadge.className = "file-type shared-to-badge";
+    sharedToBadge.textContent = sharedTo.length === 1 ? `${sharedTo[0]}에 공유됨` : `${sharedTo[0]} 외 ${sharedTo.length - 1}곳에 공유됨`;
+    sharedToBadge.title = `공유한 워크스페이스: ${sharedTo.join(", ")}`;
+    nameLine.append(sharedToBadge);
+  }
   const summary = document.createElement("span");
   summary.className = "document-summary";
   summary.textContent = getDocumentSummary(record);
@@ -589,9 +597,10 @@ function createDocumentRow(record) {
   const shareButton = document.createElement("button");
   shareButton.type = "button";
   shareButton.className = "document-share-button";
-  shareButton.classList.toggle("is-shared", Boolean(workspace?.isSharedDocument(record)));
+  const isShared = sharedTo.length > 0 || Boolean(workspace?.isSharedDocument(record));
+  shareButton.classList.toggle("is-shared", isShared);
   shareButton.setAttribute("aria-label", `${record.name} 팀에 공유`);
-  shareButton.title = workspace?.isSharedDocument(record) ? "팀에 공유됨 · 다시 공유" : "팀 워크스페이스에 공유";
+  shareButton.title = isShared ? `공유됨${sharedTo.length ? `: ${sharedTo.join(", ")}` : ""} · 다른 워크스페이스에도 공유` : "팀 워크스페이스에 공유";
   shareButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="10" r="2.5" /><circle cx="14.5" cy="5" r="2.5" /><circle cx="14.5" cy="15" r="2.5" /><path d="m8.2 8.8 4-2.5M8.2 11.2l4 2.5" /></svg>';
   shareButton.addEventListener("click", () => workspace?.openShareDialog(record));
 

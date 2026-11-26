@@ -1,6 +1,7 @@
 import Chart from "chart.js/auto";
 import { parseNumber, parseTemporal } from "./value-parsing.js";
 import { INSIGHT_LEVEL_LABELS, sortInsightsByPriority } from "./insight-priority.js";
+import { explainHighlight } from "./highlight-explain.js";
 
 export { parseTemporal };
 
@@ -949,15 +950,38 @@ function formatDerivedValue(value) {
   return String(value);
 }
 
-function showHighlightDetail(card, highlight, sourceLookup, onNavigate) {
+function appendExplanation(detail, explanation) {
+  if (!explanation?.sentences?.length) return;
+  const box = createElement("div", "highlight-explanation");
+  box.append(createElement("strong", "", "이렇게 볼 수 있어요"));
+  const list = createElement("ul", "highlight-explanation-list");
+  explanation.sentences.forEach((sentence) => {
+    list.append(createElement("li", `highlight-explanation-item level-${sentence.level}`, sentence.text));
+  });
+  box.append(list);
+  if (explanation.caveat) box.append(createElement("p", "highlight-explanation-caveat", explanation.caveat));
+  detail.append(box);
+}
+
+function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, sourceDocument) {
   card.querySelector(".highlight-detail")?.remove();
   card.querySelectorAll(".visual-data-highlighted").forEach((element) => element.classList.remove("visual-data-highlighted"));
   const detail = createElement("div", "highlight-detail");
   detail.append(createElement("strong", "", highlight.label));
   detail.append(createElement("p", "", highlight.reason));
 
+  let explanation = null;
+  try {
+    explanation = explainHighlight(sourceDocument, visual, highlight);
+  } catch {
+    explanation = null;
+  }
+  appendExplanation(detail, explanation);
+
   if (highlight.derived) {
-    const derived = createElement("div", "highlight-derived");
+    // 계산식은 접어 두고, 궁금할 때만 펼쳐 볼 수 있게 한다.
+    const derived = createElement("details", "highlight-derived");
+    derived.append(createElement("summary", "", "계산 근거 보기"));
     derived.append(createElement("strong", "", "계산식"));
     derived.append(createElement("p", "", highlight.derived.formula));
     derived.append(createElement("strong", "", "계산에 사용한 원래 값"));
@@ -1008,7 +1032,7 @@ function showHighlightDetail(card, highlight, sourceLookup, onNavigate) {
   if (firstSourceId) onNavigate?.(firstSourceId);
 }
 
-function renderHighlights(card, visual, highlights, sourceLookup, onNavigate) {
+function renderHighlights(card, visual, highlights, sourceLookup, onNavigate, sourceDocument = null) {
   const list = card.querySelector(".visual-highlights");
   if (highlights.length === 0) return;
   list.append(createElement("h4", "visual-highlights-heading", "중요한 부분"));
@@ -1026,7 +1050,7 @@ function renderHighlights(card, visual, highlights, sourceLookup, onNavigate) {
     path.setAttribute("d", "M3 8h10M9 4l4 4-4 4");
     arrow.append(path);
     button.append(level, label, arrow);
-    button.addEventListener("click", () => showHighlightDetail(card, highlight, sourceLookup, onNavigate));
+    button.addEventListener("click", () => showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, sourceDocument));
     list.append(button);
   });
 }
@@ -1108,7 +1132,7 @@ export function renderVisuals(spec, { container, sourceDocument = null, onNaviga
     container.append(card);
     try {
       renderVisualContent(visual, content, highlights, sourceLookup, onNavigate, chartList);
-      renderHighlights(card, visual, highlights, sourceLookup, onNavigate);
+      renderHighlights(card, visual, highlights, sourceLookup, onNavigate, sourceDocument);
       renderedCount += 1;
     } catch (error) {
       card.remove();

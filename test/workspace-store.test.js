@@ -155,3 +155,22 @@ test("게스트마다 비공개 체험 공간을 만들고 로그아웃 정리 �
     assert.ok(shared.id);
   });
 });
+
+test("내가 공유한 문서가 어느 워크스페이스에 있는지 원본 id로 알려 준다", async () => {
+  await withStore(async (store) => {
+    const [workspace] = await store.listWorkspaces();
+    await store.joinWorkspace(workspace.id, { actor: alice });
+    await store.joinWorkspace(workspace.id, { actor: bob });
+    const second = await store.createWorkspace({ actor: alice, name: "영업 팀" });
+    await store.shareDocument(workspace.id, { actorId: alice.id, note: "", record: csvRecord });
+    const other = await store.shareDocument(second.id, { actorId: alice.id, note: "", record: csvRecord });
+    await store.shareDocument(workspace.id, { actorId: bob.id, note: "", record: { ...csvRecord, id: "bob-local" } });
+
+    const mine = await store.listMySharedDocuments(alice.id);
+    assert.deepEqual(mine.map((item) => [item.originId, item.workspaceName]).sort(), [["local-1", "영업 팀"], ["local-1", workspace.name]].sort());
+    assert.equal((await store.listMySharedDocuments(bob.id)).length, 1);
+
+    await store.unshareDocument(second.id, other.id, { actorId: alice.id });
+    assert.deepEqual((await store.listMySharedDocuments(alice.id)).map((item) => item.workspaceId), [workspace.id]);
+  });
+});
