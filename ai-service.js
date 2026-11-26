@@ -1,4 +1,4 @@
-import { isSupportedByEvidence } from "./source-evidence.js";
+import { isSupportedByEvidence, numericValues } from "./source-evidence.js";
 import { validateAiQuality } from "./ai-quality.js";
 import { normalizeAiEnvelope, parseJsonObject } from "./ai-response.js";
 import { buildDocumentChunks } from "./ai-chunks.js";
@@ -576,6 +576,9 @@ export async function requestAiSummary(document, {
       return { result };
     } catch (error) {
       configurationError ||= toConfigurationError(error);
+      if (!error?.code) {
+        await reportInternalError(onDiagnostic, error, { document, chunkCount: chunks.length, stage: `chunk_${index + 1}_internal_error` });
+      }
       return { error };
     }
   });
@@ -589,11 +592,52 @@ export async function requestAiSummary(document, {
     throw new AiServiceError("AI_RESPONSE_INVALID", "잠시 후 다시 시도해 주세요");
   }
 
-  const merged = chunks.length === 1
-    ? successful[0]
-    : mergeChunkResults(successful, failures.length);
   const fullSourceMap = new Map(document.sources.map((source) => [source.source_id, { text: source.text }]));
-  const envelopeIssue = validateAiEnvelope(merged, fullSourceMap);
-  if (envelopeIssue) throw new AiServiceError("AI_RESPONSE_INVALID", "일부 AI 결과를 안전하게 합칠 수 없습니다. 잠시 후 다시 시도해 주세요");
-  return merged;
+  // 조각 결과를 합치다 예상 못 한 오류가 나도 '요청 실패'로 끝내지 않는다.
+  // 원인을 진단 기록에 남기고, 전체 원문 기준으로도 통과하는 조각만 다시 합쳐 돌려준다.
+  const tryMerge = (results, failedCount) => {
+    const merged = chunks.length === 1 ? results[0] : mergeChunkResults(results, failedCount);
+    return validateAiEnvelope(merged, fullSourceMap) ? null : merged;
+  };
+  try {
+    const merged = tryMerge(successful, failures.length);
+    if (merged) return merged;
+  } catch (error) {
+    await reportInternalError(onDiagnostic, error, { document, chunkCount: chunks.length, stage: "merge_error" });
+  }
+  const usable = successful.filter((result) => {
+    try {
+      return !validateAiEnvelope(result, fullSourceMap);
+    } catch (error) {
+      reportInternalError(onDiagnostic, error, { document, chunkCount: chunks.length, stage: "chunk_validation_error" });
+      return false;
+    }
+  });
+  if (usable.length > 0) {
+    try {
+      const merged = tryMerge(usable, failures.length + successful.length - usable.length);
+      if (merged) return merged;
+    } catch (error) {
+      await reportInternalError(onDiagnostic, error, { document, chunkCount: chunks.length, stage: "fallback_merge_error" });
+    }
+  }
+  throw new AiServiceError("AI_RESPONSE_INVALID", "일부 AI 결과를 안전하게 합칠 수 없습니다. 잠시 후 다시 시도해 주세요");
+}
+
+async function reportInternalError(onDiagnostic, error, { document, chunkCount, stage }) {
+  if (typeof onDiagnostic !== "function") return;
+  try {
+    await onDiagnostic({
+      model: MODEL_NAME,
+      document_type: document?.type || "unknown",
+      chunk_count: chunkCount,
+      stage,
+      issue: `${error?.name || "Error"}: ${String(error?.message || error).slice(0, 300)}`,
+      stack: String(error?.stack || "").split("\n").slice(0, 6).join("\n"),
+      response_length: 0,
+      raw_response: "",
+    });
+  } catch {
+    // 진단 기록 실패가 응답을 막지 않게 한다.
+  }
 }

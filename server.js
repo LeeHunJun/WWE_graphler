@@ -103,13 +103,18 @@ function sendJson(response, statusCode, payload, extraHeaders = {}) {
   response.end(JSON.stringify(payload));
 }
 
+// ai-response.js의 오류는 이름과 code만 같은 일반 Error라 instanceof로는 구분되지 않아 함께 인정한다.
+function isServiceError(error) {
+  return error instanceof AiServiceError || (error?.name === "AiServiceError" && typeof error.code === "string");
+}
+
 function getAiErrorResponse(error) {
-  const code = error instanceof AiServiceError || error instanceof AiJobQueueError ? error.code : "AI_CALL_FAILED";
+  const code = isServiceError(error) || error instanceof AiJobQueueError ? error.code : "AI_CALL_FAILED";
   const message = error instanceof AiJobQueueError
     ? error.message
-    : error instanceof AiServiceError && ["AI_RESPONSE_INVALID", "AI_CALL_FAILED"].includes(error.code)
+    : isServiceError(error) && ["AI_RESPONSE_INVALID", "AI_CALL_FAILED"].includes(error.code)
       ? "잠시 후 다시 시도해 주세요"
-      : error instanceof AiServiceError
+      : isServiceError(error)
         ? error.message
         : "AI 서비스 요청에 실패했습니다. 다시 시도해 주세요.";
   const status = error instanceof AiJobQueueError ? error.status
@@ -142,6 +147,23 @@ async function executeAiJob(payload, requestId, startedAt) {
     });
     return { statusCode: 200, body: result };
   } catch (error) {
+    // 예상 못 한 오류는 화면에는 일반 문구만, 서버 로그와 진단 기록에는 실제 원인과 위치를 남긴다.
+    if (!isServiceError(error)) {
+      process.stderr.write(`[grappler-ai] job ${requestId} 내부 오류: ${error?.stack || error}\n`);
+      try {
+        await logAiResponseDiagnostic({
+          request_id: requestId,
+          request_elapsed_ms: Date.now() - startedAt,
+          stage: "internal_error",
+          issue: `${error?.name || "Error"}: ${String(error?.message || error).slice(0, 300)}`,
+          stack: String(error?.stack || "").split("\n").slice(0, 8).join("\n"),
+        });
+      } catch {
+        // 진단 기록 실패는 무시한다.
+      }
+      const failure = getAiErrorResponse(error);
+      return { ...failure, body: { ...failure.body, detail: `${error?.name || "Error"}: ${String(error?.message || "").slice(0, 160)}`, requestId } };
+    }
     return getAiErrorResponse(error);
   }
 }

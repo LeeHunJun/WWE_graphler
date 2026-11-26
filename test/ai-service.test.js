@@ -1001,3 +1001,23 @@ test("API 키가 거부되면(401) 키를 확인하라고 안내한다", async (
     (error) => error.code === "AI_NOT_CONFIGURED" && error.message.includes("LLM_API_KEY"),
   );
 });
+
+test("여러 구간의 요약을 합칠 때 우선순위 계산이 실패하지 않는다(numericValues 누락 회귀)", async () => {
+  const sources = [{ source_id: "sheet:0:row:1", text: "항목 | 값" }];
+  for (let index = 2; index <= 90; index += 1) sources.push({ source_id: `sheet:0:row:${index}`, text: `항목${index} | ${index * 10}` });
+  const diagnostics = [];
+  const result = await requestAiSummary({ name: "big.csv", type: "csv", sources }, {
+    ...options,
+    onDiagnostic: (entry) => diagnostics.push(entry),
+    fetchImpl: async (_url, init) => {
+      const chunkSources = JSON.parse(JSON.parse(init.body).messages.find((message) => message.role === "user").content).sources;
+      const row = chunkSources.find((source) => source.source_id !== "sheet:0:row:1");
+      const [name, value] = row.text.split(" | ");
+      const item = { text: `${name} 값은 ${value}입니다.`, evidence: row.text, source_ids: [row.source_id, "sheet:0:row:1"] };
+      return modelResponse(JSON.stringify({ summary: [item], key_points: [], spec: { status: "ok", message: "구간 요약", visuals: [] } }));
+    },
+  });
+  assert.equal(result.spec.status, "ok");
+  assert.ok(result.summary.length >= 2, "여러 구간 요약이 합쳐진다");
+  assert.ok(!diagnostics.some((entry) => /error/.test(entry.stage || "")), "내부 오류 진단이 없다");
+});
