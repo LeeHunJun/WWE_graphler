@@ -751,6 +751,48 @@ function getChartColor(level, fallback) {
   return level ? LEVEL_COLORS[level] : fallback;
 }
 
+const CHART_FONT_SIZE = 10;
+const CHART_LEGEND_FONT_SIZE = 11;
+const MAX_ROTATED_LABELS = 60;
+const MAX_LABEL_CHARACTERS = 30;
+
+function estimateTextWidth(text, fontSize) {
+  return [...String(text ?? "")].reduce((width, character) => width + (/[\u3131-\uD7A3]/.test(character) ? fontSize : fontSize * 0.6), 0);
+}
+
+// x축 이름이 길어서 가로로는 다 못 보여 줄 때만 대각선(45°)으로 눕혀 모두 표시한다.
+// 짧은 이름(예: 남/여)은 지금처럼 가로로 둔다.
+export function getXAxisLayout(labels, availableWidth, fontSize = CHART_FONT_SIZE) {
+  const list = (labels || []).map((label) => String(label ?? ""));
+  const longest = list.reduce((max, label) => Math.max(max, estimateTextWidth(label.slice(0, MAX_LABEL_CHARACTERS), fontSize)), 0);
+  const width = Number.isFinite(availableWidth) && availableWidth > 0 ? availableWidth : 600;
+  const slot = (width - 40) / Math.max(1, list.length);
+  const rotate = list.length > 0 && list.length <= MAX_ROTATED_LABELS && longest + 6 > slot;
+  return {
+    rotate,
+    // 눕힌 글자가 차지하는 높이만큼 그래프 영역을 늘려 막대·선이 납작해지지 않게 한다.
+    extraHeight: rotate ? Math.min(150, Math.round(longest * Math.SQRT1_2) + 8) : 0,
+    ticks: rotate
+      ? {
+        autoSkip: false,
+        maxRotation: 45,
+        minRotation: 45,
+        font: { size: fontSize },
+        callback(value) {
+          const label = String(this.getLabelForValue(value) ?? "");
+          return label.length > MAX_LABEL_CHARACTERS ? `${label.slice(0, MAX_LABEL_CHARACTERS - 1)}…` : label;
+        },
+      }
+      : { maxRotation: 0, autoSkip: true, font: { size: fontSize } },
+  };
+}
+
+function applyXAxisLayout(wrap, content, labels) {
+  const layout = getXAxisLayout(labels, content.clientWidth || wrap.clientWidth);
+  if (layout.extraHeight > 0) wrap.style.height = `${205 + layout.extraHeight}px`;
+  return layout.ticks;
+}
+
 function createChartCanvas(content, label) {
   const wrap = createElement("div", "visual-chart-wrap");
   const canvas = document.createElement("canvas");
@@ -766,7 +808,8 @@ function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, ch
   const accessibleDescription = visual.data.series
     .map((series) => `${series.name}: ${series.values.map((value) => value === null ? "결측" : value).join(", ")}`)
     .join(". ");
-  const { canvas } = createChartCanvas(content, accessibleDescription);
+  const { wrap, canvas } = createChartCanvas(content, accessibleDescription);
+  const xTicks = applyXAxisLayout(wrap, content, visual.data.labels);
 
   const datasets = visual.data.series.map((series, seriesIndex) => ({
     label: series.name,
@@ -796,7 +839,7 @@ function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, ch
       maintainAspectRatio: false,
       interaction: { mode: "nearest", intersect: true },
       plugins: {
-        legend: { display: datasets.length > 1, labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true, font: { size: 9 } } },
+        legend: { display: datasets.length > 1, labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true, font: { size: CHART_LEGEND_FONT_SIZE } } },
         tooltip: {
           callbacks: {
             label(context) {
@@ -807,8 +850,8 @@ function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, ch
         },
       },
       scales: {
-        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, font: { size: 8 } } },
-        y: { beginAtZero: false, grid: { color: "#edf0ed" }, ticks: { font: { size: 8 }, maxTicksLimit: 5 } },
+        x: { grid: { display: false }, ticks: xTicks },
+        y: { beginAtZero: false, grid: { color: "#edf0ed" }, ticks: { font: { size: CHART_FONT_SIZE }, maxTicksLimit: 5 } },
       },
       onClick(_event, activeElements) {
         const active = activeElements[0];
@@ -826,7 +869,8 @@ function drawBarChart(visual, content, highlights, sourceLookup, onNavigate, cha
   const accessibleDescription = visual.data.labels
     .map((label, index) => `${label}: ${visual.data.values[index] === null ? "결측" : visual.data.values[index]}`)
     .join(". ");
-  const { canvas } = createChartCanvas(content, accessibleDescription);
+  const { wrap, canvas } = createChartCanvas(content, accessibleDescription);
+  const xTicks = applyXAxisLayout(wrap, content, visual.data.labels);
   const chart = new Chart(canvas, {
     type: "bar",
     data: {
@@ -853,8 +897,8 @@ function drawBarChart(visual, content, highlights, sourceLookup, onNavigate, cha
         },
       },
       scales: {
-        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, font: { size: 8 } } },
-        y: { beginAtZero: true, grid: { color: "#edf0ed" }, ticks: { font: { size: 8 }, maxTicksLimit: 5 } },
+        x: { grid: { display: false }, ticks: xTicks },
+        y: { beginAtZero: true, grid: { color: "#edf0ed" }, ticks: { font: { size: CHART_FONT_SIZE }, maxTicksLimit: 5 } },
       },
       onClick(_event, activeElements) {
         const active = activeElements[0];

@@ -72,6 +72,11 @@ const developerTools = document.querySelector("#developer-tools");
 const toast = document.querySelector("#toast");
 const saveInsightButton = document.querySelector("#save-insight-button");
 const deleteDocumentDialog = document.querySelector("#delete-document-dialog");
+const renameDocumentDialog = document.querySelector("#rename-document-dialog");
+const renameDocumentForm = document.querySelector("#rename-document-form");
+const renameDocumentOriginal = document.querySelector("#rename-document-original");
+const renameDocumentReset = document.querySelector("#rename-document-reset");
+const previewRenameButton = document.querySelector("#preview-rename-button");
 const deleteDocumentFileName = document.querySelector("#delete-document-file-name");
 const cancelDeleteDocumentButton = document.querySelector("#cancel-delete-document");
 const confirmDeleteDocumentButton = document.querySelector("#confirm-delete-document");
@@ -506,7 +511,7 @@ function getDocumentSearchText(record) {
     const extractedText = record.type === "pdf"
       ? record.pages.map((page) => page.text).join(" ")
       : record.sheets.map((sheet) => `${sheet.name} ${sheet.rows.map((row) => row.join(" ")).join(" ")}`).join(" ");
-    searchCache.set(record.id, `${record.name} ${extractedText}`.toLocaleLowerCase("ko"));
+    searchCache.set(record.id, `${record.name} ${record.originalName || ""} ${extractedText}`.toLocaleLowerCase("ko"));
   }
   return searchCache.get(record.id);
 }
@@ -554,6 +559,7 @@ function createDocumentRow(record) {
   nameLine.className = "document-name-line";
   const name = document.createElement("strong");
   name.textContent = record.name;
+  if (record.originalName && record.originalName !== record.name) name.title = `원본 파일: ${record.originalName}`;
   const typeBadge = document.createElement("span");
   typeBadge.className = "file-type";
   typeBadge.textContent = typeInfo.label;
@@ -606,6 +612,14 @@ function createDocumentRow(record) {
   deleteButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2m3 0-.7 10H5.7L5 6m3 3v4m4-4v4" /></svg>';
   deleteButton.addEventListener("click", () => openDeleteDocumentDialog(record));
 
+  const renameButton = document.createElement("button");
+  renameButton.type = "button";
+  renameButton.className = "document-rename-button";
+  renameButton.setAttribute("aria-label", `${record.name} 이름 바꾸기`);
+  renameButton.title = "이름 바꾸기";
+  renameButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m13.5 3.5 3 3L7 16H4v-3l9.5-9.5Z" /></svg>';
+  renameButton.addEventListener("click", () => openRenameDocumentDialog(record));
+
   const shareButton = document.createElement("button");
   shareButton.type = "button";
   shareButton.className = "document-share-button";
@@ -616,7 +630,7 @@ function createDocumentRow(record) {
   shareButton.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="10" r="2.5" /><circle cx="14.5" cy="5" r="2.5" /><circle cx="14.5" cy="15" r="2.5" /><path d="m8.2 8.8 4-2.5M8.2 11.2l4 2.5" /></svg>';
   shareButton.addEventListener("click", () => workspace?.openShareDialog(record));
 
-  row.append(selectButton, shareButton, deleteButton);
+  row.append(selectButton, renameButton, shareButton, deleteButton);
   return row;
 }
 
@@ -798,6 +812,7 @@ function renderPreview(record, focusSourceId = null) {
   previewBadge.textContent = typeInfo.label;
   previewBadge.title = "브라우저에 저장된 파일";
   previewFileName.textContent = record.name;
+  previewFileName.title = record.originalName && record.originalName !== record.name ? `원본 파일: ${record.originalName}` : record.name;
   previewFileType.textContent = typeInfo.label;
   previewFileIcon.className = `mini-file-icon mini-file-icon-${record.type}`;
   previewMeta.replaceChildren();
@@ -1347,6 +1362,47 @@ function selectDocument(id, sourceId = null) {
   if (selectionChanged) renderSelectedVisuals(record);
 }
 
+// 앱 안에서 보이는 문서 이름만 바꾼다. 처음 바꿀 때 원래 파일 이름을 originalName에 남긴다.
+let pendingRenameDocumentId = null;
+
+function openRenameDocumentDialog(record) {
+  if (!record || renameDocumentDialog.open) return;
+  pendingRenameDocumentId = record.id;
+  renameDocumentForm.reset();
+  const error = renameDocumentForm.querySelector(".form-error");
+  error.hidden = true;
+  error.textContent = "";
+  renameDocumentOriginal.textContent = record.originalName || record.name;
+  renameDocumentReset.hidden = !record.originalName || record.originalName === record.name;
+  renameDocumentForm.elements.name.value = record.name;
+  renameDocumentDialog.showModal();
+  renameDocumentForm.elements.name.select();
+}
+
+async function renameDocument(id, nextName) {
+  const record = documents.find((item) => item.id === id);
+  if (!record) return;
+  const name = String(nextName || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!name) throw new Error("이름을 입력해 주세요.");
+  const previous = { name: record.name, originalName: record.originalName };
+  if (!record.originalName) record.originalName = record.name;
+  record.name = name;
+  if (record.originalName === name) delete record.originalName;
+  try {
+    await saveDocument(record);
+  } catch {
+    record.name = previous.name;
+    if (previous.originalName) record.originalName = previous.originalName;
+    else delete record.originalName;
+    throw new Error("이름을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.");
+  }
+  searchCache.delete(record.id);
+  renderDocuments();
+  if (selectedDocumentId === record.id) renderPreview(record);
+  workspace?.refreshView();
+  showToast(`문서 이름을 “${name}”(으)로 바꿨어요.`);
+}
+
 function openDeleteDocumentDialog(record) {
   if (!record || isDeletingDocument || deleteDocumentDialog.open) return;
   pendingDeleteDocumentId = record.id;
@@ -1548,6 +1604,27 @@ document.querySelector("#view-all").addEventListener("click", () => {
   renderDocuments();
 });
 
+renameDocumentForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const error = renameDocumentForm.querySelector(".form-error");
+  try {
+    await renameDocument(pendingRenameDocumentId, renameDocumentForm.elements.name.value);
+    renameDocumentDialog.close();
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.hidden = false;
+  }
+});
+renameDocumentReset.addEventListener("click", () => {
+  const record = documents.find((item) => item.id === pendingRenameDocumentId);
+  if (record?.originalName) renameDocumentForm.elements.name.value = record.originalName;
+});
+renameDocumentDialog.addEventListener("close", () => {
+  pendingRenameDocumentId = null;
+});
+previewRenameButton.addEventListener("click", () => {
+  openRenameDocumentDialog(documents.find((item) => item.id === selectedDocumentId));
+});
 cancelDeleteDocumentButton.addEventListener("click", () => {
   if (isDeletingDocument) return;
   deleteDocumentDialog.close();

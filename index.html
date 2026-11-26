@@ -308,6 +308,9 @@
                     <svg viewBox="0 0 20 20"><path d="M5 2.5h6l4 4v11H5V2.5Z" /><path d="M11 2.8v4h3.8M7 10h6M7 13h6" /></svg>
                   </span>
                   <span class="insight-file-name" id="preview-file-name"></span>
+                  <button class="preview-rename-button" id="preview-rename-button" type="button" title="문서 이름 바꾸기" aria-label="문서 이름 바꾸기">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m13.5 3.5 3 3L7 16H4v-3l9.5-9.5Z" /></svg>
+                  </button>
                   <span class="preview-file-type" id="preview-file-type"></span>
                 </div>
                 <div class="preview-meta" id="preview-meta"></div>
@@ -499,6 +502,20 @@
           <button class="delete-confirm-button" id="confirm-delete-document" type="button">삭제</button>
         </div>
       </div>
+    </dialog>
+    <dialog class="team-dialog" id="rename-document-dialog" aria-labelledby="rename-document-title">
+      <form class="team-form" id="rename-document-form" method="dialog" novalidate>
+        <p class="mini-eyebrow">RENAME DOCUMENT</p>
+        <h2 id="rename-document-title">문서 이름 바꾸기</h2>
+        <p class="team-form-help">앱 안에서 보이는 이름만 바뀌고, 파일은 그대로예요. 원본 파일: <strong id="rename-document-original"></strong></p>
+        <label class="team-field"><span>새 이름</span><input name="name" maxlength="80" required autocomplete="off" placeholder="예) 인수인계 파일" /></label>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="team-form-actions">
+          <button class="team-ghost-button" type="button" id="rename-document-reset">원래 이름으로</button>
+          <button class="team-ghost-button" type="button" data-close-dialog>취소</button>
+          <button class="team-primary-button" type="submit">저장</button>
+        </div>
+      </form>
     </dialog>
     <dialog class="team-dialog" id="profile-dialog" aria-labelledby="profile-dialog-title">
       <form class="team-form" id="profile-form" method="dialog" novalidate>
