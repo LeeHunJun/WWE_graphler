@@ -405,6 +405,26 @@ async function requestSingleChunk(document, {
   throw new AiServiceError("AI_RESPONSE_INVALID", "잠시 후 다시 시도해 주세요");
 }
 
+// 주소가 틀렸거나(404·405) 키가 거부된(401·403) 경우는 다시 시도해도 같으므로, 설정을 고치라는 안내로 바꾼다.
+function toConfigurationError(error) {
+  const status = error?.diagnostic?.stage === "provider_http_error" ? error.diagnostic.status : null;
+  if (status === 404 || status === 405) {
+    const raw = String(error.diagnostic.raw_response || "").trimStart().slice(0, 200).toLowerCase();
+    const looksLikeWebPage = raw.startsWith("<!doctype") || raw.startsWith("<html");
+    return new AiServiceError(
+      "AI_NOT_CONFIGURED",
+      `LLM_BASE_URL 주소에서 AI API를 찾지 못했어요 (HTTP ${status}). ${looksLikeWebPage ? "지금 주소는 AI API가 아니라 웹 페이지 주소로 보여요. " : ""}AI 서비스에서 발급한 OpenAI 호환 API 주소(보통 /v1로 끝나요)를 .env.local의 LLM_BASE_URL에 넣고 서버를 다시 시작해 주세요.`,
+    );
+  }
+  if (status === 401 || status === 403) {
+    return new AiServiceError(
+      "AI_NOT_CONFIGURED",
+      `AI 서비스가 API 키를 거부했어요 (HTTP ${status}). .env.local의 LLM_API_KEY와 LLM_BASE_URL이 같은 서비스의 것인지 확인해 주세요.`,
+    );
+  }
+  return null;
+}
+
 export async function requestAiSummary(document, {
   apiKey,
   baseUrl,
@@ -441,6 +461,8 @@ export async function requestAiSummary(document, {
       });
       successful.push(result);
     } catch (error) {
+      const configurationError = toConfigurationError(error);
+      if (configurationError) throw configurationError;
       failures.push(error);
     }
   }

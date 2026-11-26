@@ -847,3 +847,28 @@ test("데이터 행이 없는 CSV는 모델을 호출하지 않습니다", async
   }), (error) => error instanceof AiServiceError && error.code === "NO_ANALYZABLE_CONTENT");
   assert.equal(callCount, 0);
 });
+
+test("AI 주소가 틀리면(404) 모든 조각을 반복하지 않고 설정 안내를 돌려준다", async () => {
+  let calls = 0;
+  await assert.rejects(
+    requestAiSummary(document, {
+      ...options,
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response("<!doctype html><html><title>앱</title></html>", { status: 404, headers: { "Content-Type": "text/html" } });
+      },
+    }),
+    (error) => error.code === "AI_NOT_CONFIGURED" && error.message.includes("HTTP 404") && error.message.includes("웹 페이지 주소"),
+  );
+  assert.equal(calls, 1);
+});
+
+test("API 키가 거부되면(401) 키를 확인하라고 안내한다", async () => {
+  await assert.rejects(
+    requestAiSummary(document, {
+      ...options,
+      fetchImpl: async () => new Response(JSON.stringify({ error: { code: "invalid_api_key" } }), { status: 401, headers: { "Content-Type": "application/json" } }),
+    }),
+    (error) => error.code === "AI_NOT_CONFIGURED" && error.message.includes("LLM_API_KEY"),
+  );
+});

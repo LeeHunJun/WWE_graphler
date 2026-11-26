@@ -1188,7 +1188,7 @@ async function runAiSummary(record) {
     aiErrors.delete(record.id);
     if (selectedDocumentId === record.id) {
       renderAiSummary(record);
-      renderSelectedVisuals(record);
+      renderExtraInsights(record);
     }
   } catch (error) {
     const message = error.name === "AbortError" || error.name === "TimeoutError"
@@ -1319,6 +1319,12 @@ function renderSelectedVisuals(record) {
   renderVisuals(mainSpec, { container: visualizationOutput, sourceDocument: record, onNavigate });
   if (questionResult && questionResult.spec.visuals.length === 0) visualizationOutput.replaceChildren();
 
+  renderExtraInsights(record, questionResult);
+}
+
+// 'AI 요약'으로 펼친 부가 정보만 다시 그린다. 위의 질문 답은 건드리지 않아 자리가 바뀌지 않는다.
+function renderExtraInsights(record, questionResult = getQuestionResult(record)) {
+  const onNavigate = (sourceId) => selectDocument(record.id, sourceId);
   extraInsights.hidden = !record.extrasRevealed;
   if (record.extrasRevealed) {
     renderVisuals(getExtraSpec(record, questionResult), { container: extraVisualizationOutput, sourceDocument: record, onNavigate });
@@ -1583,8 +1589,10 @@ aiSummarizeButton.addEventListener("click", async () => {
     } catch {
       // 펼친 상태 저장에 실패해도 이번 화면에는 보여 준다.
     }
-    renderSelectedVisuals(record);
-    extraInsights.scrollIntoView({ block: "start", behavior: "smooth" });
+    renderAiSummary(record);
+    renderExtraInsights(record);
+    // 질문한 답은 위에 그대로 두고 화면도 옮기지 않는다. 부가 정보는 그 아래에 펼친다.
+    showToast(record.question ? "질문 답은 위에 그대로 두고, 아래에 부가 정보를 펼쳤어요." : "아래에 부가 정보를 펼쳤어요.");
     if (record.aiSummary) return;
   }
   runAiSummary(record);
