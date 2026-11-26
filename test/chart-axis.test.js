@@ -14,8 +14,9 @@ test("짧은 x축 이름은 가로로 두고, 다 못 보여 줄 만큼 길면 �
   assert.equal(rotated.ticks.minRotation, 45);
   assert.ok(rotated.extraHeight > 0, "눕힌 글자만큼 그래프 높이를 늘린다");
 
-  const longNames = getXAxisLayout(["영업본부 수도권 1팀", "영업본부 수도권 2팀", "마케팅 전략실"], 400);
-  assert.equal(longNames.rotate, true);
+  const teams = ["영업본부 수도권 1팀", "영업본부 수도권 2팀", "마케팅 전략실", "고객경험 혁신팀", "데이터 분석 센터", "물류 운영 본부"];
+  assert.equal(getXAxisLayout(teams, 400).rotate, true, "가로로 겹치는 긴 이름은 눕힌다");
+  assert.equal(getXAxisLayout(teams.slice(0, 2), 900).rotate, false, "넓은 화면에 다 들어가면 그대로 둔다");
 });
 
 test("항목이 너무 많으면(60개 초과) 눕히지 않고 일부만 표시한다", () => {
