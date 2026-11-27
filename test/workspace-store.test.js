@@ -121,10 +121,14 @@ test("마지막 워크스페이스는 삭제할 수 없다", async () => {
   });
 });
 
-test("내가 속한 워크스페이스만 보이고, 처음엔 기본 워크스페이스에 참여한다", async () => {
+test("신규 회원은 다른 팀에 자동으로 들어가지 않고 자기 개인 공간만 생긴다", async () => {
   await withStore(async (store) => {
     const mine = await store.ensureDefaultMembership(alice);
-    assert.deepEqual(mine.map((workspace) => workspace.id), ["ws-product-team"]);
+    assert.equal(mine.length, 1);
+    assert.notEqual(mine[0].id, "ws-product-team", "프로덕트 팀에 자동 가입하지 않는다");
+    assert.equal(mine[0].name, "앨리스님의 개인 공간");
+    assert.deepEqual(mine[0].members.map((member) => [member.id, member.role]), [[alice.id, "owner"]]);
+    assert.deepEqual((await store.ensureDefaultMembership(alice)).map((workspace) => workspace.id), [mine[0].id], "다시 들어와도 개인 공간이 늘지 않는다");
     const privateTeam = await store.createWorkspace({ actor: alice, name: "비공개 팀" });
     const bobs = await store.ensureDefaultMembership(bob);
     assert.ok(!bobs.some((workspace) => workspace.id === privateTeam.id));

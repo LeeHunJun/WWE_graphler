@@ -206,6 +206,21 @@ export function initWorkspace(hooks) {
     if (announce) hooks.showToast(`“${workspace.name}” 워크스페이스로 전환했어요.`);
   }
 
+  // 신규 회원은 개인 공간 하나로 시작한다. 팀을 만들거나 초대 링크로 참여하는 방법을 한 번만 알려 준다.
+  function showPersonalSpaceTip(workspaces) {
+    if (state.profile.isGuest || workspaces.length !== 1) return;
+    const [only] = workspaces;
+    if (!only?.name?.endsWith("님의 개인 공간")) return;
+    const key = `grappler-personal-tip-${state.profile.id}`;
+    try {
+      if (window.localStorage.getItem(key)) return;
+      window.localStorage.setItem(key, "1");
+    } catch {
+      return;
+    }
+    hooks.showToast("개인 공간에서 시작해요. 팀과 함께 쓰려면 왼쪽 위 워크스페이스 메뉴에서 ‘새 워크스페이스 만들기’를 누르거나, 팀원에게 받은 초대 링크로 들어오세요.");
+  }
+
   async function refresh({ quiet = true } = {}) {
     try {
       const { workspaces, myShares } = await api("");
@@ -230,6 +245,7 @@ export function initWorkspace(hooks) {
         return;
       }
       await enterWorkspace(target);
+      showPersonalSpaceTip(workspaces);
       if (invited) {
         const joined = state.workspace?.id === invited;
         params.delete("workspace");

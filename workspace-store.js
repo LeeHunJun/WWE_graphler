@@ -16,7 +16,8 @@ const LIMITS = Object.freeze({
   title: 80,
   itemText: 400,
   items: 20,
-  workspaces: 50,
+  // 회원마다 개인 공간이 생기므로 서버 전체 워크스페이스 한도를 넉넉히 둔다.
+  workspaces: 5000,
   members: 100,
   sharedDocuments: 200,
   insights: 500,
@@ -277,10 +278,15 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
       if (actor?.isGuest) return [createGuestWorkspace(actor)];
       const mine = await this.listWorkspaces(actor.id);
       if (mine.length > 0) return mine;
-      const target = database.prepare("SELECT id FROM workspaces WHERE id = ?").get("ws-product-team")
-        || statements.workspaces.get();
-      if (!target) return [];
-      return [await this.joinWorkspace(target.id, { actor })];
+      // 신규 회원을 다른 사람의 팀(예: 프로덕트 팀)에 자동으로 넣지 않는다.
+      // 혼자 쓰는 개인 공간을 하나 만들어 주고, 팀은 직접 만들거나 초대 링크로 참여한다.
+      const displayName = cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" });
+      return [await this.createWorkspace({
+        actor,
+        name: `${displayName}님의 개인 공간`.slice(0, LIMITS.workspaceName),
+        description: "나만 보는 개인 공간이에요. 팀과 함께 쓰려면 새 팀을 만들거나 초대 링크로 참여하세요.",
+        color: "forest",
+      })];
     },
 
     async deleteGuestWorkspaces(actorId) {

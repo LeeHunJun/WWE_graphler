@@ -157,7 +157,7 @@ test("DB 파일을 다시 열어도 워크스페이스·인증 계정이 유지�
 
     secondDb = await openDatabase({ dataDir });
     const [workspace] = await createWorkspaceStore({ database: secondDb }).listWorkspaces(user.id);
-    assert.equal(workspace.name, "프로덕트 팀");
+    assert.equal(workspace.name, "수현님의 개인 공간", "신규 회원은 프로덕트 팀이 아니라 개인 공간을 받는다");
     assert.equal(await createAuthStore({ database: secondDb }).login({ username: "suhyun_db", password: "safe-pass-2" }).then(({ user: signedIn }) => signedIn.id), user.id);
   } finally {
     secondDb?.close();
