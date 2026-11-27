@@ -210,7 +210,7 @@ export function initWorkspace(hooks) {
   function showPersonalSpaceTip(workspaces) {
     if (state.profile.isGuest || workspaces.length !== 1) return;
     const [only] = workspaces;
-    if (!only?.name?.endsWith("님의 개인 공간")) return;
+    if (only?.settings?.personalOwnerId !== state.profile.id) return;
     const key = `grappler-personal-tip-${state.profile.id}`;
     try {
       if (window.localStorage.getItem(key)) return;
@@ -676,6 +676,14 @@ export function initWorkspace(hooks) {
     form.querySelectorAll("input, textarea").forEach((input) => { input.disabled = !isOwner; });
     form.querySelector("[type=submit]").hidden = !isOwner;
     $("#team-invite-link").value = `${window.location.origin}${window.location.pathname}?workspace=${encodeURIComponent(workspace.id)}`;
+    // 개인 공간은 나 혼자 쓰는 곳: 초대 링크·나가기·삭제를 숨긴다.
+    const personal = Boolean(workspace.settings?.personalOwnerId);
+    document.querySelector(".team-invite").hidden = personal;
+    $("#team-leave-workspace").hidden = personal;
+    $("#team-delete-workspace").hidden = personal;
+    if (personal) {
+      $("#team-settings-role").textContent = "나만 보는 개인 공간이에요. 이름과 색은 바꿀 수 있지만, 초대·나가기·삭제는 할 수 없어요. 팀과 함께 쓰려면 새 워크스페이스를 만드세요.";
+    }
 
     const memberList = $("#team-member-list");
     memberList.replaceChildren();

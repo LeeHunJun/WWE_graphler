@@ -4988,3 +4988,9 @@ svg {
   color: var(--muted);
   font-size: 12px;
 }
+
+.team-invite[hidden],
+#team-leave-workspace[hidden],
+#team-delete-workspace[hidden] {
+  display: none;
+}

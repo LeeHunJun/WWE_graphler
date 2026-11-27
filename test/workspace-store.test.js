@@ -178,3 +178,37 @@ test("내가 공유한 문서가 어느 워크스페이스에 있는지 원본 i
     assert.deepEqual((await store.listMySharedDocuments(alice.id)).map((item) => item.workspaceId), [workspace.id]);
   });
 });
+
+test("모든 회원은 개인 공간을 하나 갖고, 팀에 참여해도 개인 공간은 남으며 지우거나 나갈 수 없다", async () => {
+  await withStore(async (store) => {
+    // 예전 방식으로 프로덕트 팀에만 들어가 있던 회원도 다음 접속 때 개인 공간이 생긴다.
+    await store.joinWorkspace("ws-product-team", { actor: bob });
+    const bobs = await store.ensureDefaultMembership(bob);
+    assert.equal(bobs[0].name, "밥님의 개인 공간", "개인 공간이 맨 앞");
+    assert.equal(bobs[0].settings.personalOwnerId, bob.id);
+    assert.ok(bobs.some((workspace) => workspace.id === "ws-product-team"), "참여한 팀도 그대로");
+
+    // 팀을 만들거나 참여해도 개인 공간은 하나 그대로.
+    const team = await store.createWorkspace({ actor: alice, name: "분석 팀" });
+    await store.ensureDefaultMembership(alice);
+    await store.joinWorkspace(team.id, { actor: bob });
+    const again = await store.ensureDefaultMembership(bob);
+    assert.equal(again.filter((workspace) => workspace.settings.personalOwnerId === bob.id).length, 1);
+    assert.equal(again.length, 3);
+
+    const personal = again[0];
+    await assert.rejects(store.deleteWorkspace(personal.id, { actorId: bob.id }), { code: "PERSONAL_WORKSPACE" });
+    await assert.rejects(store.removeMember(personal.id, bob.id, { actorId: bob.id }), { code: "PERSONAL_WORKSPACE" });
+    await assert.rejects(store.joinWorkspace(personal.id, { actor: alice }), { code: "PERSONAL_WORKSPACE" });
+  });
+});
+
+test("표시 없이 만들어졌던 예전 개인 공간은 새로 만들지 않고 개인 공간으로 이어 쓴다", async () => {
+  await withStore(async (store) => {
+    const legacy = await store.createWorkspace({ actor: alice, name: "앨리스님의 개인 공간" });
+    const mine = await store.ensureDefaultMembership(alice);
+    assert.equal(mine.length, 1);
+    assert.equal(mine[0].id, legacy.id);
+    assert.equal(mine[0].settings.personalOwnerId, alice.id);
+  });
+});
