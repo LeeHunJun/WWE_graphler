@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AiJobQueueError, createAiJobStore } from "./ai-job-store.js";
 import { AiServiceError, checkAiConnection, requestAiSummary } from "./ai-service.js";
+import { finalizeBrief, streamBrief } from "./ai-brief.js";
 import { handleAuthApi, isAuthApiPath } from "./auth-api.js";
 import { createAuthStore } from "./auth-store.js";
 import { openDatabase } from "./database.js";
@@ -172,6 +173,59 @@ async function executeAiJob(payload, requestId, startedAt) {
 let aiStatusCache = null;
 const AI_STATUS_TTL_MS = 10 * 60 * 1000;
 
+// 빠른 AI 핵심 요약: 한 줄씩(NDJSON) 흘려 보낸다.
+// {"type":"delta","text":"…"} 여러 번 → {"type":"done","summary":[…],"key_points":[…]} 또는 {"type":"error","code","message"}
+async function handleAiBrief(request, response) {
+  let payload;
+  try {
+    payload = await readJsonBody(request);
+  } catch (error) {
+    sendJson(response, 400, { error: error?.message || "요청 형식이 올바르지 않아요.", code: "INVALID_DOCUMENT" });
+    return;
+  }
+  const digest = {
+    name: String(payload?.digest?.name || "").slice(0, 200),
+    type: String(payload?.digest?.type || "").slice(0, 20),
+    text: String(payload?.digest?.text || "").slice(0, 20000),
+  };
+  response.writeHead(200, {
+    "Cache-Control": "no-store, no-transform",
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "X-Accel-Buffering": "no",
+    "X-Content-Type-Options": "nosniff",
+  });
+  const write = (event) => {
+    if (!response.writableEnded) response.write(`${JSON.stringify(event)}\n`);
+  };
+  write({ type: "start" });
+  // 프록시가 조용한 연결을 끊지 않도록, AI 첫 글자를 기다리는 동안 5초마다 신호를 보낸다.
+  const keepAlive = setInterval(() => write({ type: "ping" }), 5000);
+  const startedAt = Date.now();
+  try {
+    const text = await streamBrief(digest, {
+      ...getServiceConfig(),
+      onDelta: (piece) => write({ type: "delta", text: piece }),
+    });
+    const result = finalizeBrief(text, digest);
+    if (result.summary.length === 0 && result.key_points.length === 0) {
+      write({ type: "error", code: "AI_UNGROUNDED", message: "AI가 쓴 문장에 데이터에 없는 숫자가 있어 보여 드리지 않았어요. 다시 시도해 주세요." });
+    } else {
+      write({ type: "done", ...result, elapsedMs: Date.now() - startedAt });
+    }
+  } catch (error) {
+    const known = error instanceof AiServiceError || (error?.name === "AiServiceError" && typeof error.code === "string");
+    if (!known) process.stderr.write(`[grappler-ai] brief 내부 오류: ${error?.stack || error}\n`);
+    write({
+      type: "error",
+      code: known ? error.code : "INTERNAL",
+      message: known ? error.message : `요약 중 서버 오류가 났어요 (${error?.name || "Error"}). 다시 시도해 주세요.`,
+    });
+  } finally {
+    clearInterval(keepAlive);
+    response.end();
+  }
+}
+
 async function handleAiStatus(request, response) {
   const url = new URL(request.url, "http://localhost");
   const config = getServiceConfig();
@@ -289,6 +343,10 @@ async function main() {
 
   const server = createHttpServer(async (request, response) => {
     const requestPath = new URL(request.url, "http://localhost").pathname;
+    if (requestPath === "/api/ai-brief" && request.method === "POST") {
+      await handleAiBrief(request, response);
+      return;
+    }
     if (requestPath === "/api/ai-status" && request.method === "GET") {
       await handleAiStatus(request, response);
       return;

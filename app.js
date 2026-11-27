@@ -6,6 +6,7 @@ import { renderHandoverPanel } from "./handover-view.js";
 import { initWorkspace } from "./workspace.js";
 import { answerQuestion, suggestQuestions } from "./question-answer.js";
 import { initChatbot } from "./chatbot.js";
+import { buildAiDigest } from "./ai-digest.js";
 import { analyzeDrivers, buildDriverVisualSpec } from "./driver-analysis.js";
 import { ensureSignedIn, signOut, updateProfile } from "./auth.js";
 
@@ -108,6 +109,8 @@ let workspace = null;
 const searchCache = new Map();
 const aiLoadingDocuments = new Set();
 const aiErrors = new Map();
+// 스트리밍 중인 AI 요약 글자(문서 id → 지금까지 받은 텍스트)
+const aiLiveText = new Map();
 const deletingDocuments = new Set();
 
 class FileProcessingError extends Error {
@@ -1102,7 +1105,10 @@ function createTextElement(tagName, className, text) {
 function renderAiSummary(record) {
   const isLoading = Boolean(record && aiLoadingDocuments.has(record.id));
   const error = record ? aiErrors.get(record.id) : null;
-  const summary = record?.aiSummary;
+  const brief = record?.aiBrief || null;
+  const live = record ? aiLiveText.get(record.id) : undefined;
+  // 빠른 요약(aiBrief)이 있으면 그것을, 없을 때만 예전 방식 요약(aiSummary)을 보여 준다.
+  const summary = brief ? null : record?.aiSummary;
 
   const aiReady = aiConnection?.status === "connected";
   aiSummarizeButton.disabled = !record || isLoading || !aiReady;
@@ -1114,19 +1120,31 @@ function renderAiSummary(record) {
     ? "요약 중"
     : error
       ? "다시 시도"
-      : summary
+      : summary || brief
         ? "AI 다시 요약"
         : "AI 핵심 요약";
-  aiInsights.hidden = !record || (!summary && !isLoading && !error);
+  aiInsights.hidden = !record || (!summary && !brief && !isLoading && !error);
   renderAiVisuals(record);
-  aiSummaryLoading.hidden = !isLoading;
+  aiSummaryLoading.hidden = !isLoading || Boolean(live);
   aiSummaryError.hidden = !error;
   aiSummaryErrorText.textContent = error || "";
-  aiSummaryCard.hidden = !summary;
+  aiSummaryCard.hidden = !summary && !brief && !live;
   aiSummarySentences.replaceChildren();
   aiKeyPoints.replaceChildren();
   aiInsufficientMessage.hidden = !summary || summary.spec.status !== "insufficient_data";
 
+  if (live && isLoading) {
+    // AI가 쓰는 중인 글자를 그대로 보여 준다(스트리밍).
+    aiSummarySaved.textContent = "AI가 쓰는 중…";
+    String(live).split(/\r?\n/).filter((line) => line.trim()).forEach((line) => {
+      aiSummarySentences.append(createTextElement("p", "ai-live-line", line.replace(/^요약\s*[:：]\s*/, "")));
+    });
+    return;
+  }
+  if (brief) {
+    renderAiBrief(brief);
+    return;
+  }
   if (!summary) return;
   const sourceLookup = getSourceLookup(record);
   const savedDate = summary.completedAt ? new Date(summary.completedAt) : null;
@@ -1153,6 +1171,100 @@ function renderAiSummary(record) {
       aiSummarySentences.replaceChildren(createTextElement("p", "ai-evidence-warning", "근거 위치를 확인할 수 없는 요약은 표시하지 않았습니다."));
       break;
     }
+  }
+}
+
+function renderAiBrief(brief) {
+  const savedDate = brief.completedAt ? new Date(brief.completedAt) : null;
+  aiSummarySaved.textContent = savedDate
+    ? `저장됨 · ${new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(savedDate)}`
+    : "이 브라우저에 저장됨";
+  brief.summary.slice(0, 2).forEach((sentence) => aiSummarySentences.append(createTextElement("p", "ai-brief-sentence", sentence)));
+  if (brief.key_points.length > 0) {
+    aiKeyPoints.append(createTextElement("h4", "ai-key-points-heading", "핵심 내용"));
+    const list = document.createElement("ul");
+    list.className = "ai-brief-points";
+    brief.key_points.slice(0, 5).forEach((point) => list.append(createTextElement("li", "", point)));
+    aiKeyPoints.append(list);
+  }
+}
+
+// 빠른 AI 핵심 요약: 코드로 계산한 사실 목록만 보내고, 답을 글자 단위로 받아(스트리밍) 바로 보여 준다.
+async function runAiBrief(record) {
+  if (!record || aiLoadingDocuments.has(record.id)) return;
+  aiErrors.delete(record.id);
+  aiLoadingDocuments.add(record.id);
+  aiLiveText.set(record.id, "");
+  renderAiSummary(record);
+  const isCurrent = () => selectedDocumentId === record.id && documents.some((item) => item.id === record.id);
+  let lastRender = 0;
+  try {
+    const response = await fetch("/api/ai-brief", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ digest: buildAiDigest(record) }),
+      signal: AbortSignal.timeout(90000),
+    });
+    if (!response.ok || !response.body) {
+      let message = `AI 요약 요청이 실패했어요 (HTTP ${response.status}).`;
+      try {
+        message = (await response.json()).error || message;
+      } catch {
+        // 응답이 JSON이 아니면 기본 문구를 쓴다.
+      }
+      throw new Error(message);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finished = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (event.type === "delta") {
+          aiLiveText.set(record.id, `${aiLiveText.get(record.id) || ""}${event.text}`);
+          if (isCurrent() && Date.now() - lastRender > 80) {
+            lastRender = Date.now();
+            renderAiSummary(record);
+          }
+        } else if (event.type === "done") {
+          finished = event;
+        } else if (event.type === "error") {
+          throw new Error(event.message || "AI 요약에 실패했어요.");
+        }
+      }
+    }
+    if (!finished) throw new Error("AI 답이 끝나기 전에 연결이 끊겼어요. 다시 시도해 주세요.");
+    const previous = record.aiBrief;
+    record.aiBrief = { summary: finished.summary, key_points: finished.key_points, completedAt: Date.now() };
+    try {
+      await saveDocument(record);
+    } catch {
+      record.aiBrief = previous;
+      throw new Error("요약은 받았지만 브라우저에 저장하지 못했어요. 저장 공간을 확인해 주세요.");
+    }
+  } catch (error) {
+    const message = error.name === "TimeoutError" || error.name === "AbortError"
+      ? "AI 요약이 90초 안에 끝나지 않았어요. 잠시 뒤 다시 시도해 주세요."
+      : error instanceof TypeError && /fetch|network/i.test(error.message)
+        ? "서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요."
+        : error.message || "AI 요약에 실패했어요.";
+    if (documents.some((item) => item.id === record.id)) aiErrors.set(record.id, message);
+  } finally {
+    aiLoadingDocuments.delete(record.id);
+    aiLiveText.delete(record.id);
+    if (isCurrent()) renderAiSummary(record);
   }
 }
 
@@ -1780,7 +1892,7 @@ showExtrasButton.addEventListener("click", async () => {
 aiSummarizeButton.addEventListener("click", () => {
   const record = documents.find((item) => item.id === selectedDocumentId);
   if (!record || aiConnection?.status !== "connected") return;
-  runAiSummary(record);
+  runAiBrief(record);
 });
 aiStatusRecheck.addEventListener("click", () => refreshAiStatus({ force: true }));
 questionForm.addEventListener("submit", (event) => {
@@ -1790,7 +1902,7 @@ questionForm.addEventListener("submit", (event) => {
 });
 aiSummaryRetryButton.addEventListener("click", () => {
   const record = documents.find((item) => item.id === selectedDocumentId);
-  runAiSummary(record);
+  runAiBrief(record);
 });
 
 document.querySelectorAll("[data-toast]").forEach((button) => {

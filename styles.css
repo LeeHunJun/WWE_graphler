@@ -4949,3 +4949,33 @@ svg {
   font-size: 13px;
   font-weight: 700;
 }
+
+/* 빠른 AI 핵심 요약(스트리밍) */
+.ai-brief-sentence,
+.ai-live-line {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.ai-live-line:last-child::after {
+  content: "▍";
+  margin-left: 2px;
+  color: var(--violet);
+  animation: ai-caret 1s steps(1) infinite;
+}
+
+@keyframes ai-caret {
+  50% { opacity: 0; }
+}
+
+.ai-brief-points {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
