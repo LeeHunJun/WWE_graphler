@@ -5,6 +5,8 @@ import { renderDriverPanel } from "./driver-view.js";
 import { renderHandoverPanel } from "./handover-view.js";
 import { initWorkspace } from "./workspace.js";
 import { answerQuestion, suggestQuestions } from "./question-answer.js";
+import { initChatbot } from "./chatbot.js";
+import { analyzeDrivers, buildDriverVisualSpec } from "./driver-analysis.js";
 import { ensureSignedIn, signOut, updateProfile } from "./auth.js";
 
 const LEGACY_DATABASE_NAME = "grappler-local-documents";
@@ -1919,7 +1921,39 @@ async function startApp() {
   databaseName = `${LEGACY_DATABASE_NAME}--${user.id}`;
   await claimLegacyDocuments(user);
   startWorkspace(user);
+  startChatbot();
   await init();
+}
+
+// 오른쪽 아래 데이터 도우미: 질문에 맞는 그래프(질문 답 → 부가 정보)를 찾아 이동하고 짧게 요약한다.
+function startChatbot() {
+  initChatbot({
+    getRecord: () => documents.find((item) => item.id === selectedDocumentId) || null,
+    getMainVisuals: (record) => getQuestionResult(record)?.spec.visuals || [],
+    getExtraVisuals: (record) => {
+      const visuals = [...getExtraSpec(record, getQuestionResult(record)).visuals];
+      if (record.type !== "pdf") {
+        try {
+          visuals.push(...buildDriverVisualSpec(analyzeDrivers(record), record).visuals);
+        } catch {
+          // 원인 분석을 못 하는 표는 자동 그래프만 찾는다.
+        }
+      }
+      return visuals;
+    },
+    revealExtras: async (record) => {
+      record.extrasRevealed = true;
+      try {
+        await saveDocument(record);
+      } catch {
+        // 펼친 상태 저장에 실패해도 이번 화면에는 보여 준다.
+      }
+      renderAiSummary(record);
+      renderExtraInsights(record);
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    },
+    askInQuestionBar: (record, question) => submitQuestion(record, question),
+  });
 }
 
 startApp();

@@ -1036,7 +1036,7 @@ function factorBarVisual(result, factor, sheet) {
     id: `driver-factor-${factor.columnIndex}`,
     type: "bar_chart",
     title: `${factor.baseName}별 ${target.measureLabel}`,
-    caption: `영향 강도 ${factor.strength.label} · η² ${factor.eta2.toFixed(3)} · ${factor.test} ${formatPValue(factor.pValue)} · 전체 ${targetValueText(target, target.overall)}`,
+    caption: `‘${factor.best.label}’${josa(factor.best.label, "이/가")} ${targetValueText(target, factor.best.value)}${josa(targetValueText(target, factor.best.value), "으로/로")} 가장 높고, ‘${factor.worst.label}’${josa(factor.worst.label, "이/가")} ${targetValueText(target, factor.worst.value)}${josa(targetValueText(target, factor.worst.value), "으로/로")} 가장 낮아요.`,
     source_ids: [...new Set([header, ...groups.flatMap((group) => group.sourceIds.slice(0, 3))])],
     data: {
       labels: groups.map((group) => `${group.label}${group.small ? " (표본 적음)" : ""}`),
@@ -1044,7 +1044,7 @@ function factorBarVisual(result, factor, sheet) {
       source_ids: sourceIds,
       series_name: target.measureLabel,
       unit: target.kind === "binary" ? "%" : target.unit,
-      note: `막대를 누르면 해당 그룹의 첫 행으로 이동해요. ${MIN_GROUP_SIZE}행 미만 그룹은 ‘표본 적음’으로 표시했어요.`,
+      note: `그래프를 누르면 오른쪽 아래 도우미가 짧게 요약해 줘요. ${MIN_GROUP_SIZE}행 미만 그룹은 ‘표본 적음’으로 표시했어요.`,
     },
     highlights,
   };
@@ -1069,15 +1069,13 @@ function rankingTableVisual(result, sheet) {
     id: "driver-ranking",
     type: "comparison_table",
     title: `${target.measureLabel}에 영향이 큰 요인 순위`,
-    caption: "η²(설명력)가 클수록 그 요인으로 나눴을 때 그룹 간 차이가 커요. p값이 0.05보다 작으면 우연일 가능성이 낮아요.",
+    caption: "위에 있는 요인일수록 결과에 주는 영향이 커요.",
     source_ids: [header],
     data: {
       columns: [
         { key: "rank", label: "순위" },
         { key: "factor", label: "요인" },
         { key: "strength", label: "영향 강도" },
-        { key: "eta2", label: "η²" },
-        { key: "p", label: "p값" },
         { key: "gap", label: "가장 높은 vs 낮은 그룹" },
       ],
       rows,
@@ -1200,7 +1198,8 @@ function decompositionVisual(result, decomposition, index) {
 function comoverTableVisual(result) {
   const { target, period } = result;
   const sourceIds = [period.periods[period.focusIndex - 1].sourceId, period.periods[period.focusIndex].sourceId];
-  const rows = period.comovers.slice(0, 10).map((item) => ({
+  // 매출에서 계산되는 결과 열(원가·영업이익 등)은 '함께 바뀐 원인 후보'가 아니므로 뺀다.
+  const rows = period.comovers.filter((item) => !item.downstream).slice(0, 10).map((item) => ({
     id: `comover-${item.columnIndex}`,
     cells: {
       name: item.name,
@@ -1214,14 +1213,13 @@ function comoverTableVisual(result) {
     id: "driver-comovers",
     type: "comparison_table",
     title: `${period.change.toLabel}에 함께 바뀐 지표`,
-    caption: `전체 기간에서 ${target.baseName} 증감과 함께 움직인 정도(r) 순서예요. r이 음수면 반대로 움직였다는 뜻이에요.`,
+    caption: `전체 기간에서 ${target.baseName}${josa(target.baseName, "과/와")} 함께 많이 움직인 지표부터 보여 줘요.`,
     source_ids: sourceIds,
     data: {
       columns: [
         { key: "name", label: "지표" },
         { key: "change", label: `${period.change.fromLabel} → ${period.change.toLabel}` },
-        { key: "r", label: "증감 상관 r" },
-        { key: "agreement", label: "같은 방향 비율" },
+        { key: "agreement", label: `${target.baseName}${josa(target.baseName, "과/와")} 같은 방향으로 움직인 비율` },
       ],
       rows,
     },
@@ -1238,7 +1236,7 @@ export function buildDriverVisualSpec(result, record) {
   if (result.period) {
     visuals.push(periodLineVisual(result));
     result.period.decompositions.forEach((decomposition, index) => visuals.push(decompositionVisual(result, decomposition, index)));
-    if (result.period.comovers.length > 0) visuals.push(comoverTableVisual(result));
+    if (result.period.comovers.some((item) => !item.downstream)) visuals.push(comoverTableVisual(result));
   }
   if (result.factors.length > 0) {
     if (!result.period) visuals.push(rankingTableVisual(result, sheet));

@@ -856,8 +856,7 @@ function drawLineChart(visual, content, highlights, sourceLookup, onNavigate, ch
       onClick(_event, activeElements) {
         const active = activeElements[0];
         if (!active) return;
-        const sourceId = visual.data.series[active.datasetIndex]?.source_ids[active.index];
-        if (sourceId && sourceLookup.has(sourceId)) onNavigate?.(sourceId);
+        // 점을 눌러도 미리보기로 이동하지 않는다. 카드 클릭으로 챗봇 요약이 열린다.
       },
     },
   });
@@ -903,8 +902,7 @@ function drawBarChart(visual, content, highlights, sourceLookup, onNavigate, cha
       onClick(_event, activeElements) {
         const active = activeElements[0];
         if (!active) return;
-        const sourceId = visual.data.source_ids[active.index];
-        if (sourceId && sourceLookup.has(sourceId)) onNavigate?.(sourceId);
+        // 막대를 눌러도 미리보기로 이동하지 않는다. 카드 클릭으로 챗봇 요약이 열린다.
       },
     },
   });
@@ -917,11 +915,8 @@ function appendSourceIds(record, sourceIds) {
   return sourceIds.map((sourceId) => ({ sourceId, location: record.get(sourceId) }));
 }
 
-function addSourceClick(element, sourceIds, sourceLookup, onNavigate) {
-  const sourceId = sourceIds.find((id) => sourceLookup.has(id));
-  if (!sourceId) return;
-  element.addEventListener("click", () => onNavigate?.(sourceId));
-}
+// 표 행·카드를 눌러도 미리보기로 이동하지 않는다(그래프 카드 클릭은 챗봇 요약으로 연결).
+function addSourceClick() {}
 
 function markTarget(element, id) {
   if (id) element.dataset.targetId = id;
@@ -1118,6 +1113,36 @@ function renderVisualContent(visual, content, highlights, sourceLookup, onNaviga
   return drawKpiCards(visual, content, sourceLookup, onNavigate);
 }
 
+// 챗봇용 짧은 그래프 요약: 한 줄 설명 + 가장 중요한 강조점의 해석 한두 문장.
+export function summarizeVisual(visual, sourceDocument = null) {
+  if (!visual) return [];
+  const lines = [];
+  if (visual.caption) lines.push(String(visual.caption).replace(/\s*\((?:[^()]*?)(?:p\s*[<=>]|r\s*=|η²|설명력|구간 중)[^()]*\)/g, ""));
+  const highlights = sortInsightsByPriority([...(visual.highlights || [])]);
+  const top = highlights[0];
+  if (top) {
+    let explanation = null;
+    try {
+      explanation = explainHighlight(sourceDocument, visual, top);
+    } catch {
+      explanation = null;
+    }
+    const first = explanation?.sentences?.[0]?.text;
+    if (first) lines.push(first);
+    else if (top.reason) lines.push(`${top.label}: ${top.reason}`);
+  }
+  // 강조점이 없는 표는 위쪽 두 행을 "항목: 값"으로 짧게 보여 준다.
+  if (lines.length < 2 && visual.type === "comparison_table" && Array.isArray(visual.data?.rows) && Array.isArray(visual.data?.columns)) {
+    const [first, second] = visual.data.columns;
+    visual.data.rows.slice(0, 2).forEach((row) => {
+      const name = row.cells?.[first?.key];
+      const value = row.cells?.[second?.key];
+      if (name !== undefined && value !== undefined) lines.push(`${name}: ${value}`);
+    });
+  }
+  return [...new Set(lines.filter(Boolean))].slice(0, 3);
+}
+
 export function renderVisuals(spec, { container, sourceDocument = null, onNavigate } = {}) {
   if (!container) return { renderedCount: 0, warnings: ["시각화를 표시할 영역이 없습니다."] };
   chartInstances.get(container)?.forEach((chart) => {
@@ -1176,6 +1201,12 @@ export function renderVisuals(spec, { container, sourceDocument = null, onNaviga
   prepared.forEach(({ visual, highlights }) => {
     const { card, content } = createCard(visual);
     container.append(card);
+    // 그래프를 누르면 챗봇이 이 그래프의 짧은 요약을 보여 준다('중요한 부분' 버튼은 제외).
+    card.classList.add("is-clickable");
+    card.addEventListener("click", (event) => {
+      if (event.target.closest(".visual-highlights, button, a, summary")) return;
+      document.dispatchEvent(new CustomEvent("grappler:visual-click", { detail: { visual, sourceDocument, card } }));
+    });
     try {
       renderVisualContent(visual, content, highlights, sourceLookup, onNavigate, chartList);
       renderHighlights(card, visual, highlights, sourceLookup, onNavigate, sourceDocument);

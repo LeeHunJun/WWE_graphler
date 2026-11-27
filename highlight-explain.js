@@ -127,7 +127,7 @@ function explainFactorGroup(result, factorIndex, highlight) {
     const other = group.label === factor.best.label ? factor.worst : factor.best;
     sentences.push({
       level: "important",
-      text: `${factor.baseName}${josa(factor.baseName, "이/가")} ‘${group.label}’인 경우 ${measure}${josa(measure, "은/는")} ${valueText(target, group.value)}로, ‘${other.label}’(${valueText(target, other.value)})${josa(other.label, "과/와")} 비교돼요.`,
+      text: `${factor.baseName}${josa(factor.baseName, "이/가")} ‘${group.label}’인 경우 ${measure}${josa(measure, "은/는")} ${valueText(target, group.value)}${josa(valueText(target, group.value), "으로/로")}, ‘${other.label}’(${valueText(target, other.value)})${josa(other.label, "과/와")} 비교돼요.`,
     });
   }
   const rank = ranked.findIndex((item) => item.columnIndex === factorIndex);
@@ -192,10 +192,18 @@ export function explainHighlight(record, visual, highlight) {
   const seriesProfile = profiles.find((profile) => profile.name === seriesName) || null;
   const usableTarget = seriesProfile && ["binary", "numeric", "numeric_discrete"].includes(seriesProfile.kind);
 
+  // 요인별 막대(○○별 평균)는 기간 비교가 아니라 그룹 비교로 설명한다.
+  const factorVisual = /driver-factor-(\d+)$/.exec(String(visual?.id || ""));
   let result;
   try {
     result = analyzeDrivers(record, { sheetIndex: location.sheetIndex, targetIndex: usableTarget ? seriesProfile.index : null });
     if (result?.status !== "ok") return null;
+    if (factorVisual) {
+      const sentences = explainFactorGroup(result, Number(factorVisual[1]), highlight);
+      return sentences.length > 0
+        ? { sentences: sentences.slice(0, MAX_SENTENCES), caveat: "데이터에서 계산한 차이를 근거로 한 추정이라, 다른 이유가 함께 있을 수 있어요." }
+        : null;
+    }
     if (result.mode === "periods" && result.period) {
       const focus = result.period.periods.findIndex((item) => item.sourceId === highlight.source_ids?.[0]);
       if (focus >= 1 && focus !== result.period.focusIndex) {

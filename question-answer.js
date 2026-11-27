@@ -47,7 +47,7 @@ function normalizeTitle(text) {
 }
 
 // 질문 글자와 그래프 제목이 가장 많이 겹치는 그래프(2글자 이상 단어 기준)를 고른다.
-function bestTitleMatch(question, visuals) {
+export function bestTitleMatch(question, visuals) {
   const words = String(question || "").split(/[\s,.?!·]+/)
     .map((word) => word.replace(/(은|는|이|가|을|를|의|에|에서|으로|로|과|와|도|만|좀|요)$/, ""))
     .map(normalizeTitle)
