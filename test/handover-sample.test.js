@@ -153,3 +153,16 @@ test("인수인계 샘플: '거래처별 미수금'을 물으면 거래처별 �
     assertValidSpec(answer.spec);
   }
 });
+
+test("인수인계 샘플: 같은 값이 여러 개인 막대는 강조하지 않고 사실만 알려 준다", async () => {
+  const { answerQuestion } = await import("../question-answer.js");
+  const spec = buildSpreadsheetVisualizationSpec(record);
+  const changes = spec.visuals.find((visual) => visual.title === "거래처현황 · 담당자교체(회)");
+  assert.deepEqual(changes.highlights, [], "상위 10개가 모두 3회면 '최고'를 하나만 고르지 않는다");
+  assert.match(changes.caption, /최고값\(3회\)인 항목이 11개예요/);
+  for (const visual of spec.visuals.filter((item) => item.type === "bar_chart")) {
+    assert.ok(visual.highlights.every((highlight) => !highlight.label.startsWith("하락")), `${visual.title}: 크기순 막대에는 '하락'을 붙이지 않는다`);
+  }
+  const answer = answerQuestion(record, "담당자교체가 가장 많은 거래처");
+  assert.match(answer.sentences[0].text, /가장 큰 값\(3회\)인 항목은 .+ 11곳/);
+});

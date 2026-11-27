@@ -139,7 +139,9 @@ function findLargestDrop(seriesEntries, points, labels, pointIndexByRow) {
   return largestDrop;
 }
 
-function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, unit = "") {
+// allowDrop: 시간 순서가 있는 선 그래프에서만 '하락'을 찾는다(크기순으로 정렬한 막대에서는 의미 없음).
+// allowMinimum: 상위 10개만 보여 주는 막대에서는 그중 가장 작은 값이 전체 최저가 아니므로 '최저'를 붙이지 않는다.
+function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, unit = "", { allowDrop = true, allowMinimum = true } = {}) {
   const observations = [];
   seriesEntries.forEach((series) => {
     points.forEach((point) => {
@@ -160,7 +162,7 @@ function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, un
   });
 
   const { maximum, minimum } = findExtrema(observations);
-  const drop = findLargestDrop(seriesEntries, points, labels, pointIndexByRow);
+  const drop = allowDrop ? findLargestDrop(seriesEntries, points, labels, pointIndexByRow) : null;
   const highlights = [];
 
   if (drop) {
@@ -184,11 +186,15 @@ function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, un
     });
   }
 
+  // 같은 값이 여러 개면(예: 상위 10개가 모두 3회) '최고·최저'로 하나만 골라 강조하지 않는다.
+  const visibleObservations = observations.filter((item) => item.visualIndex !== undefined);
+  const isTied = (observation) => observation
+    && visibleObservations.filter((item) => item.value === observation.value).length > 1;
   [
     { observation: maximum, label: "최고", reason: "이 시각화에서 가장 높은 수치입니다." },
-    { observation: minimum, label: "최저", reason: "이 시각화에서 가장 낮은 수치입니다." },
+    { observation: allowMinimum ? minimum : null, label: "최저", reason: "이 시각화에서 가장 낮은 수치입니다." },
   ].forEach(({ observation, label, reason }) => {
-    if (!observation || highlights.length >= 3) return;
+    if (!observation || highlights.length >= 3 || isTied(observation)) return;
     const isDuplicateTarget = highlights.some((highlight) => {
       const target = highlight.target;
       return target.point_index === observation.visualIndex && (target.series_id || "") === (observation.seriesId || "");
@@ -295,7 +301,13 @@ function createAutoVisual(sheet, sheetIndex, axis, numericColumns) {
     const sourceIds = visiblePoints.map((point) => point.sourceId);
     const pointIndexByRow = new Map(visiblePoints.map((point, index) => [point.sourceId, index]));
     const series = [{ id: column.id, name: column.name, column }];
-    const caption = wasTruncated
+    // 최고값을 여러 항목이 나눠 가지면 한 항목만 '최고'라고 하지 않고 사실 그대로 알려 준다.
+    const topValue = values[0];
+    const tiedTop = points.filter((point) => getSeriesValueAtRow(column, point.rowOffset) === topValue && topValue !== null);
+    const tiedNames = tiedTop.slice(0, 3).map((point) => point.label).join(", ");
+    const caption = wasTruncated && tiedTop.length > 1
+      ? `${column.name}${topValue === null ? "" : ` 최고값(${formatNumber(topValue, column.unit)})`}인 항목이 ${tiedTop.length}개예요: ${tiedNames}${tiedTop.length > 3 ? ` 외 ${tiedTop.length - 3}개` : ""}. 상위 10개만 표시했어요.`
+      : wasTruncated
       ? `상위 10개만 표시하며, 최고 항목은 ${labels[0]} (${formatNumber(values[0], column.unit)})입니다.`
       : createCaption(visiblePoints.map((point, index) => ({ ...point, rowOffset: points.find((row) => row.sourceId === point.sourceId)?.rowOffset ?? index })), series, column.unit);
 
@@ -319,6 +331,7 @@ function createAutoVisual(sheet, sheetIndex, axis, numericColumns) {
         labels,
         pointIndexByRow,
         column.unit,
+        { allowDrop: false, allowMinimum: !wasTruncated },
       ),
     };
   });
@@ -1088,7 +1101,13 @@ function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, 
 
 function renderHighlights(card, visual, highlights, sourceLookup, onNavigate, sourceDocument = null) {
   const list = card.querySelector(".visual-highlights");
-  if (highlights.length === 0) return;
+  if (highlights.length === 0) {
+    // 값이 모두 같거나 눈에 띄는 점이 없으면 억지로 강조하지 않고 그렇다고만 알려 준다.
+    if (visual.type === "bar_chart" || visual.type === "line_chart") {
+      list.append(createElement("p", "visual-highlights-empty", "이 그래프에서는 따로 강조할 부분이 없어요."));
+    }
+    return;
+  }
   list.append(createElement("h4", "visual-highlights-heading", "중요한 부분"));
 
   sortInsightsByPriority(highlights).forEach((highlight) => {

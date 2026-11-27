@@ -164,13 +164,23 @@ function extremeRowSentences(sheet, profiles, columnIndex, labelIndex = -1) {
   if (rows.length === 0) return [];
   const max = rows.reduce((best, row) => (row.value > best.value ? row : best));
   const min = rows.reduce((best, row) => (row.value < best.value ? row : best));
+  const tiedMax = rows.filter((row) => row.value === max.value);
+  const tiedMin = rows.filter((row) => row.value === min.value);
   // 항목 이름 열(예: 거래처명)이 있으면 그 이름으로, 없으면 번호 열·행 번호로 부른다.
   const who = (row) => (labelIndex >= 0 && String(row.cells[labelIndex] ?? "").trim()
     ? String(row.cells[labelIndex]).trim()
     : idProfile ? `${idProfile.baseName} ${row.cells[idProfile.index]}` : `${row.rowNumber}행`);
+  const value = (row) => formatValue(row.value, column.unit, 1);
+  // 같은 값이 여러 항목이면 한 곳만 '가장 크다'고 하지 않고 몇 곳인지 사실대로 알려 준다.
+  const describe = (row, tied, word) => (tied.length > 1
+    ? `가장 ${word} 값(${value(row)})인 항목은 ${tied.slice(0, 3).map(who).join(", ")}${tied.length > 3 ? " 등" : ""} ${tied.length}곳`
+    : `가장 ${word} 건 ${who(row)}(${value(row)})`);
+  if (max.value === min.value) {
+    return [{ level: "info", text: `${column.baseName}${josa(column.baseName, "은/는")} 모든 항목이 ${value(max)}로 같아서 따로 강조할 부분이 없어요.` }];
+  }
   return [{
     level: "important",
-    text: `${column.baseName}${josa(column.baseName, "이/가")} 가장 큰 건 ${who(max)}(${formatValue(max.value, column.unit, 1)}), 가장 작은 건 ${who(min)}(${formatValue(min.value, column.unit, 1)})이에요.`,
+    text: `${column.baseName}${josa(column.baseName, "이/가")} ${describe(max, tiedMax, "큰")}, ${describe(min, tiedMin, "작은")}이에요.`,
   }];
 }
 

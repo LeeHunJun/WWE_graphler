@@ -4979,3 +4979,12 @@ svg {
   font-size: 12.5px;
   line-height: 1.6;
 }
+
+.visual-highlights-empty {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f7f8f6;
+  color: var(--muted);
+  font-size: 12px;
+}
