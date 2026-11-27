@@ -1,5 +1,5 @@
 // "왜?" 원인 분석 패널 화면. 계산은 driver-analysis.js가 하고, 이 파일은 그리기만 합니다.
-import { analyzeDrivers, buildDriverVisualSpec, formatValue, suggestTargets } from "./driver-analysis.js";
+import { analyzeDrivers, buildDriverVisualSpec, formatValue, plainSentence, suggestTargets } from "./driver-analysis.js";
 import { getSourceLookup, renderVisuals } from "./visualization.js";
 import { INSIGHT_LEVEL_LABELS, sortInsightsByPriority } from "./insight-priority.js";
 
@@ -49,32 +49,9 @@ export function renderInsight(insight, lookup, onNavigate) {
     createElement("span", `highlight-level highlight-level-${insight.level}`, INSIGHT_LEVEL_LABELS[insight.level] || "참고"),
     createElement("h3", "", insight.title),
   );
-  card.append(head, createElement("p", "driver-insight-sentence", insight.sentence));
+  card.append(head, createElement("p", "driver-insight-sentence", plainSentence(insight.sentence)));
 
-  const details = createElement("details", "driver-evidence");
-  details.append(createElement("summary", "", "계산 근거 보기"));
-  if (insight.evidence?.length) {
-    const list = createElement("dl", "driver-evidence-values");
-    insight.evidence.forEach((item) => {
-      list.append(createElement("dt", "", item.label), createElement("dd", "", item.value));
-    });
-    details.append(list);
-  }
-  details.append(createElement("p", "driver-evidence-method", `계산법: ${insight.method}`));
-  if (insight.rowSummary) details.append(createElement("p", "driver-evidence-rows", `근거 행: ${insight.rowSummary}`));
-
-  const sourceIds = [...new Set(insight.sourceIds || [])].filter((sourceId) => lookup.has(sourceId)).slice(0, 6);
-  if (sourceIds.length > 0) {
-    const links = createElement("div", "highlight-source-links");
-    sourceIds.forEach((sourceId) => {
-      const button = createElement("button", "", lookup.get(sourceId).label);
-      button.type = "button";
-      button.addEventListener("click", () => onNavigate?.(sourceId));
-      links.append(button);
-    });
-    details.append(links);
-  }
-  card.append(details);
+  // 계산식·근거 행·원본 이동 버튼은 두지 않고, 해석 문장만 보여 준다.
   return card;
 }
 

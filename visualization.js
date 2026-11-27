@@ -1061,19 +1061,6 @@ function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, 
   }
   appendExplanation(detail, explanation);
 
-  highlight.source_ids.forEach((sourceId) => {
-    const location = sourceLookup.get(sourceId);
-    if (!location?.text?.trim()) return;
-    const evidence = createElement("figure", "highlight-source-quote");
-    evidence.append(createElement("figcaption", "", `원문 근거 · ${location.label}`));
-    const quote = createElement("blockquote", "", location.text.slice(0, 500));
-    evidence.append(quote);
-    if (location.text.length > 500) {
-      evidence.append(createElement("p", "highlight-source-ellipsis", "원문 일부를 표시합니다."));
-    }
-    detail.append(evidence);
-  });
-
   card.append(detail);
 
   const targetKey = highlight.target.row_id
@@ -1086,8 +1073,8 @@ function showHighlightDetail(card, visual, highlight, sourceLookup, onNavigate, 
     target?.classList.add("visual-data-highlighted");
   }
 
-  // 중요한 부분을 누르면 화면을 옮기지 않고 그 자리에서 해석과 원문 근거만 보여 준다.
-  // (계산식·원본 위치 이동 버튼은 두지 않는다.)
+  // 중요한 부분을 누르면 화면을 옮기지 않고 그 자리에서 해석만 보여 준다.
+  // (계산식·원문 근거·원본 위치 이동 버튼은 두지 않는다.)
   detail.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
 }
 

@@ -1,7 +1,7 @@
 // 사용자가 적은 질문에 맞는 그래프와 답변 문장만 골라 준다.
 // 질문 속 열 이름과 "왜/추이/가장" 같은 의도 단어를 읽어, 원본 행에서 코드로 계산한다(AI 호출 없음).
 
-import { analyzeDrivers, buildDriverVisualSpec, formatValue, josa, profileColumns } from "./driver-analysis.js";
+import { analyzeDrivers, buildDriverVisualSpec, formatValue, josa, plainSentence, profileColumns } from "./driver-analysis.js";
 import { explainPeriod, measureName, valueText } from "./highlight-explain.js";
 import { buildColumnVisuals, buildSpreadsheetVisualizationSpec } from "./visualization.js";
 
@@ -39,7 +39,7 @@ function topicInsightSentences(result, visualIds) {
   return result.insights
     .filter((insight) => wanted.some((id) => insight.id === id || insight.id.startsWith(id)))
     .slice(0, 3)
-    .map((insight) => ({ level: insight.level, text: insight.sentence }));
+    .map((insight) => ({ level: insight.level, text: plainSentence(insight.sentence) }));
 }
 
 function normalizeTitle(text) {
@@ -106,7 +106,7 @@ function emptySpec(message = "") {
 function insightSentences(result, ids) {
   return result.insights
     .filter((insight) => ids.some((id) => insight.id === id || insight.id.startsWith(`${id}-`)))
-    .map((insight) => ({ level: insight.level, text: insight.sentence }));
+    .map((insight) => ({ level: insight.level, text: plainSentence(insight.sentence) }));
 }
 
 function recordSentences(result, factorIndex = null) {
