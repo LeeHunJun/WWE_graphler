@@ -38,7 +38,8 @@ const SCHEMA = `
     updated_at INTEGER NOT NULL,
     settings_json TEXT NOT NULL DEFAULT '{}',
     guest_owner_id TEXT UNIQUE,
-    guest_expires_at INTEGER
+    guest_expires_at INTEGER,
+    personal_owner_id TEXT
   );
   CREATE INDEX IF NOT EXISTS workspaces_guest_expiry_idx ON workspaces(guest_expires_at);
 
@@ -125,8 +126,13 @@ async function migrateLegacyJson(database, dataDir) {
     VALUES (@tokenHash, @userId, NULL, @createdAt, @expiresAt)
   `);
   const insertWorkspace = database.prepare(`
-    INSERT OR IGNORE INTO workspaces (id, name, description, color, created_at, updated_at, settings_json, guest_owner_id, guest_expires_at)
-    VALUES (@id, @name, @description, @color, @createdAt, @updatedAt, @settings, @guestOwnerId, @guestExpiresAt)
+    INSERT OR IGNORE INTO workspaces (
+      id, name, description, color, created_at, updated_at, settings_json,
+      guest_owner_id, guest_expires_at, personal_owner_id
+    ) VALUES (
+      @id, @name, @description, @color, @createdAt, @updatedAt, @settings,
+      @guestOwnerId, @guestExpiresAt, @personalOwnerId
+    )
   `);
   const insertMember = database.prepare(`
     INSERT OR IGNORE INTO workspace_members (workspace_id, member_id, name, username, role, joined_at)
@@ -182,6 +188,7 @@ async function migrateLegacyJson(database, dataDir) {
         settings: JSON.stringify(workspace.settings && typeof workspace.settings === "object" ? workspace.settings : {}),
         guestOwnerId: typeof workspace.guestOwnerId === "string" ? workspace.guestOwnerId : null,
         guestExpiresAt: Number.isFinite(workspace.guestExpiresAt) ? workspace.guestExpiresAt : null,
+        personalOwnerId: typeof workspace.personalOwnerId === "string" ? workspace.personalOwnerId : null,
       });
 
       for (const member of Array.isArray(workspace.members) ? workspace.members : []) {
@@ -239,6 +246,14 @@ async function migrateLegacyJson(database, dataDir) {
   }).immediate();
 }
 
+function ensurePersonalWorkspaceColumn(database) {
+  const columns = database.pragma("table_info(workspaces)");
+  if (!columns.some((column) => column.name === "personal_owner_id")) {
+    database.exec("ALTER TABLE workspaces ADD COLUMN personal_owner_id TEXT");
+  }
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS workspaces_personal_owner_idx ON workspaces(personal_owner_id) WHERE personal_owner_id IS NOT NULL");
+}
+
 export async function openDatabase({ dataDir = path.resolve(".data"), databasePath } = {}) {
   const resolvedDataDir = path.resolve(dataDir);
   const resolvedDatabasePath = databasePath
@@ -252,6 +267,7 @@ export async function openDatabase({ dataDir = path.resolve(".data"), databasePa
     database.pragma("journal_mode = WAL");
     database.pragma("synchronous = FULL");
     database.exec(SCHEMA);
+    ensurePersonalWorkspaceColumn(database);
     await chmod(resolvedDatabasePath, 0o600);
     await migrateLegacyJson(database, resolvedDataDir);
     return database;

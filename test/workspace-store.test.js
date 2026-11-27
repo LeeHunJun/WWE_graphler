@@ -110,14 +110,16 @@ test("인사이트를 저장하고 지우며, DB를 다시 열어도 내용이 �
   });
 });
 
-test("마지막 워크스페이스는 삭제할 수 없다", async () => {
+test("개인 공간은 삭제할 수 없고 팀을 삭제해도 유지됩니다", async () => {
   await withStore(async (store) => {
     const [workspace] = await store.listWorkspaces();
     await store.joinWorkspace(workspace.id, { actor: alice });
-    await assert.rejects(store.deleteWorkspace(workspace.id, { actorId: alice.id }), { code: "LAST_WORKSPACE" });
-    const second = await store.createWorkspace({ actor: alice, name: "두 번째" });
-    await store.deleteWorkspace(second.id, { actorId: alice.id });
-    assert.equal((await store.listWorkspaces()).length, 1);
+    const mine = await store.listWorkspaces(alice.id);
+    const personal = mine.find((item) => item.isPersonal);
+    assert.ok(personal, "계정에는 보존되는 개인 공간이 있습니다");
+    await assert.rejects(store.deleteWorkspace(personal.id, { actorId: alice.id }), { code: "PERSONAL_WORKSPACE" });
+    await store.deleteWorkspace(workspace.id, { actorId: alice.id });
+    assert.deepEqual((await store.listWorkspaces(alice.id)).map((item) => item.id), [personal.id]);
   });
 });
 
@@ -127,13 +129,73 @@ test("신규 회원은 다른 팀에 자동으로 들어가지 않고 자기 개
     assert.equal(mine.length, 1);
     assert.notEqual(mine[0].id, "ws-product-team", "프로덕트 팀에 자동 가입하지 않는다");
     assert.equal(mine[0].name, "앨리스님의 개인 공간");
+    assert.equal(mine[0].isPersonal, true);
     assert.deepEqual(mine[0].members.map((member) => [member.id, member.role]), [[alice.id, "owner"]]);
     assert.deepEqual((await store.ensureDefaultMembership(alice)).map((workspace) => workspace.id), [mine[0].id], "다시 들어와도 개인 공간이 늘지 않는다");
     const privateTeam = await store.createWorkspace({ actor: alice, name: "비공개 팀" });
     const bobs = await store.ensureDefaultMembership(bob);
     assert.ok(!bobs.some((workspace) => workspace.id === privateTeam.id));
     await store.joinWorkspace(privateTeam.id, { actor: bob });
-    assert.equal((await store.listWorkspaces(bob.id)).length, 2);
+    const bobWorkspaces = await store.listWorkspaces(bob.id);
+    assert.equal(bobWorkspaces.length, 2);
+    assert.equal(bobWorkspaces[0].id, bobs[0].id, "팀에 참여해도 개인 공간이 첫 번째로 유지됩니다");
+    assert.ok(bobWorkspaces[0].isPersonal);
+    assert.ok(bobWorkspaces.some((item) => item.id === privateTeam.id));
+    await assert.rejects(store.joinWorkspace(bobs[0].id, { actor: alice }), { code: "PERSONAL_WORKSPACE_PRIVATE" });
+  });
+});
+
+test("기존 팀 가입 회원도 다음 서버 초기화 때 개인 공간을 자동으로 받습니다", async () => {
+  await withStore(async (store, _dataDir, database) => {
+    const existing = { id: "user-existing-team", name: "기존 회원", username: "existing_team" };
+    const now = Date.now();
+    database.prepare(`
+      INSERT INTO users (id, name, username, password_salt, password_hash, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(existing.id, existing.name, existing.username, "salt", "hash", now);
+    database.prepare(`
+      INSERT INTO workspace_members (workspace_id, member_id, name, username, role, joined_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run("ws-product-team", existing.id, existing.name, existing.username, "editor", now);
+
+    const restartedStore = createWorkspaceStore({ database });
+    const afterRestart = await restartedStore.listWorkspaces(existing.id);
+    assert.equal(afterRestart.filter((item) => item.isPersonal).length, 1);
+    assert.equal(afterRestart.find((item) => item.isPersonal).name, "기존 회원님의 개인 공간");
+    assert.ok(afterRestart.some((item) => item.id === "ws-product-team"));
+  });
+});
+
+test("기존 ‘이름님의 개인 공간’은 표시만 보충하고 새 공간을 중복 생성하지 않습니다", async () => {
+  await withStore(async (_store, _dataDir, database) => {
+    const existing = { id: "user-legacy-personal", name: "옛 회원", username: "legacy_personal" };
+    const now = Date.now();
+    database.prepare(`
+      INSERT INTO users (id, name, username, password_salt, password_hash, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(existing.id, existing.name, existing.username, "salt", "hash", now);
+    database.prepare(`
+      INSERT INTO workspaces (id, name, description, color, created_at, updated_at, settings_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "ws-legacy-personal",
+      "옛 회원님의 개인 공간",
+      "기존 자료가 있는 개인 공간",
+      "forest",
+      now,
+      now,
+      JSON.stringify({ allowEditorShare: true, allowViewerInsights: true }),
+    );
+    database.prepare(`
+      INSERT INTO workspace_members (workspace_id, member_id, name, username, role, joined_at)
+      VALUES (?, ?, ?, ?, 'owner', ?)
+    `).run("ws-legacy-personal", existing.id, existing.name, existing.username, now);
+
+    const migrated = createWorkspaceStore({ database });
+    const mine = await migrated.listWorkspaces(existing.id);
+    assert.equal(mine.filter((workspace) => workspace.isPersonal).length, 1);
+    assert.equal(mine.find((workspace) => workspace.isPersonal).id, "ws-legacy-personal");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM workspaces WHERE personal_owner_id = ?").get(existing.id).count, 1);
   });
 });
 

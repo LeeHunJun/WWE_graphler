@@ -126,6 +126,7 @@ export async function handleAuthApi(request, response, { authStore, workspaceSto
     if (action === "signup" && request.method === "POST") {
       const body = await readJson(request);
       const { user, session } = await authStore.signup(body);
+      await workspaceStore?.ensureDefaultMembership(user);
       return send(response, 201, { user }, { "Set-Cookie": sessionCookie(request, session.token, session.expiresAt) });
     }
 
@@ -133,6 +134,7 @@ export async function handleAuthApi(request, response, { authStore, workspaceSto
       const body = await readJson(request);
       const clientKey = String(request.headers["x-forwarded-for"] || request.socket?.remoteAddress || "").split(",")[0].trim();
       const { user, session } = await authStore.login(body, { clientKey });
+      await workspaceStore?.ensureDefaultMembership(user);
       return send(response, 200, { user }, { "Set-Cookie": sessionCookie(request, session.token, session.expiresAt) });
     }
 

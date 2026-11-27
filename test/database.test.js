@@ -4,9 +4,51 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import { createAuthStore } from "../auth-store.js";
 import { openDatabase } from "../database.js";
 import { createWorkspaceStore } from "../workspace-store.js";
+
+test("기존 SQLite 파일을 보존하면서 회원별 개인 공간 표시 열을 안전하게 추가합니다", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-sqlite-personal-schema-"));
+  const databasePath = path.join(dataDir, "grappler.sqlite");
+  const legacy = new Database(databasePath);
+  legacy.exec(`
+    CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE sessions (
+      token_hash TEXT PRIMARY KEY, user_id TEXT, guest_user_json TEXT,
+      created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+      color TEXT NOT NULL DEFAULT 'forest', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      settings_json TEXT NOT NULL DEFAULT '{}', guest_owner_id TEXT UNIQUE, guest_expires_at INTEGER
+    );
+    CREATE TABLE workspace_members (
+      workspace_id TEXT NOT NULL, member_id TEXT NOT NULL, name TEXT NOT NULL,
+      username TEXT NOT NULL DEFAULT '', role TEXT NOT NULL, joined_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, member_id)
+    );
+    INSERT INTO workspaces (id, name, created_at, updated_at) VALUES ('ws-preserved-team', '기존 팀', 1, 1);
+  `);
+  legacy.close();
+
+  let database;
+  try {
+    database = await openDatabase({ dataDir, databasePath });
+    const columns = database.pragma("table_info(workspaces)").map((column) => column.name);
+    assert.ok(columns.includes("personal_owner_id"));
+    assert.equal(database.prepare("SELECT name FROM workspaces WHERE id = ?").get("ws-preserved-team").name, "기존 팀");
+    assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get("workspaces_personal_owner_idx"));
+  } finally {
+    database?.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
 
 test("기존 JSON 계정·세션·팀·공유 문서·인사이트를 SQLite로 한 번 이전합니다", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-sqlite-migrate-"));
@@ -81,7 +123,9 @@ test("기존 JSON 계정·세션·팀·공유 문서·인사이트를 SQLite로 
     const workspaceStore = createWorkspaceStore({ database, seed: false });
 
     assert.equal((await authStore.getUserBySession(token)).username, user.username);
-    const [workspace] = await workspaceStore.listWorkspaces(user.id);
+    const migratedWorkspaces = await workspaceStore.listWorkspaces(user.id);
+    const workspace = migratedWorkspaces.find((item) => item.id === "ws-legacy-000001");
+    assert.ok(migratedWorkspaces.some((item) => item.isPersonal), "기존 회원에게 개인 공간이 자동 추가됩니다");
     assert.equal(workspace.name, "기존 영업 팀");
     assert.equal(workspace.sharedDocumentCount, 1);
     const [entry] = await workspaceStore.listSharedDocuments(workspace.id);
@@ -91,7 +135,7 @@ test("기존 JSON 계정·세션·팀·공유 문서·인사이트를 SQLite로 
 
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 1);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM users").get().count, 1);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM workspace_members").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM workspace_members").get().count, 2);
     assert.ok((await readFile(path.join(dataDir, "users.json"), "utf8")).includes("legacy_user"), "이전 원본은 안전하게 남겨 둡니다");
     assert.equal((await stat(path.join(dataDir, "grappler.sqlite"))).mode & 0o777, 0o600);
   } finally {

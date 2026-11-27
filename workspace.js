@@ -318,7 +318,9 @@ export function initWorkspace(hooks) {
     const list = el("div", "menu-list");
     state.workspaces.forEach((workspace) => {
       list.append(menuItem(workspace.name, {
-        description: `멤버 ${workspace.members.length}명 · 공유 문서 ${workspace.sharedDocumentCount}개`,
+        description: workspace.isPersonal
+          ? "나만 볼 수 있는 개인 공간"
+          : `멤버 ${workspace.members.length}명 · 공유 문서 ${workspace.sharedDocumentCount}개`,
         checked: workspace.id === state.workspace?.id,
         icon: avatar(workspace.name, workspace.color),
         onClick: () => {
@@ -353,6 +355,7 @@ export function initWorkspace(hooks) {
       mobileSwitch.append(el("p", "menu-heading", "워크스페이스"));
       state.workspaces.forEach((workspace) => {
         mobileSwitch.append(menuItem(workspace.name, {
+          description: workspace.isPersonal ? "개인 공간" : undefined,
           checked: workspace.id === state.workspace?.id,
           icon: avatar(workspace.name, workspace.color),
           onClick: () => {

@@ -38,6 +38,11 @@ function cleanText(value, maxLength, { required = false, label = "값" } = {}) {
   return text;
 }
 
+function getPersonalWorkspaceName(name) {
+  const displayName = cleanText(name, LIMITS.memberName, { required: true, label: "이름" });
+  return `${displayName}님의 개인 공간`.slice(0, LIMITS.workspaceName);
+}
+
 function cleanMultiline(value, maxLength, label) {
   const text = typeof value === "string" ? value.replace(/\r\n/g, "\n").trim() : "";
   if (text.length > maxLength) throw new WorkspaceError(400, "INVALID_INPUT", `${label}은(는) ${maxLength}자 이하로 입력해 주세요.`);
@@ -124,6 +129,7 @@ function publicWorkspace(workspace) {
     createdAt: workspace.createdAt,
     updatedAt: workspace.updatedAt,
     settings: workspace.settings,
+    isPersonal: Boolean(workspace.personalOwnerId),
     members: workspace.members,
     sharedDocumentCount: workspace.sharedDocuments.length,
     insightCount: workspace.insights.length,
@@ -161,6 +167,7 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
       settings: parseJson(row.settings_json, { allowEditorShare: true, allowViewerInsights: true }),
       guestOwnerId: row.guest_owner_id,
       guestExpiresAt: row.guest_expires_at,
+      personalOwnerId: row.personal_owner_id,
       members: statements.members.all(workspaceId).map(mapMember),
       sharedDocuments: statements.sharedDocuments.all(workspaceId).map(mapSharedDocument),
       insights: statements.insights.all(workspaceId).map(mapInsight),
@@ -198,6 +205,87 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
     });
   }
 
+  function ensurePersonalWorkspaceRecord(actor) {
+    const actorId = cleanId(actor?.id);
+    const name = cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" });
+    const username = cleanText(actor?.username, LIMITS.username, { label: "아이디" });
+    const now = Date.now();
+
+    return withTransaction(database, () => {
+      pruneExpiredGuestWorkspaces();
+      let personal = database.prepare("SELECT id, name FROM workspaces WHERE personal_owner_id = ?").get(actorId);
+
+      // 이전 버전에는 개인 공간 표시 열이 없었으므로, 소유자의 개인 공간을 찾아 표시를 채운다.
+      if (!personal) {
+        personal = database.prepare(`
+          SELECT w.id, w.name, m.name AS owner_name
+          FROM workspaces AS w
+          INNER JOIN workspace_members AS m ON m.workspace_id = w.id
+          WHERE w.personal_owner_id IS NULL
+            AND w.guest_owner_id IS NULL
+            AND m.member_id = ?
+            AND m.role = 'owner'
+            AND w.name LIKE '%님의 개인 공간'
+          ORDER BY w.created_at, w.id
+          LIMIT 1
+        `).get(actorId);
+        if (personal) {
+          database.prepare("UPDATE workspaces SET personal_owner_id = ? WHERE id = ? AND personal_owner_id IS NULL")
+            .run(actorId, personal.id);
+        }
+      }
+
+      if (!personal) {
+        const id = `ws-${randomUUID()}`;
+        database.prepare(`
+          INSERT INTO workspaces (
+            id, name, description, color, created_at, updated_at, settings_json, personal_owner_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          id,
+          getPersonalWorkspaceName(name),
+          "나만 볼 수 있는 개인 공간이에요. 팀 워크스페이스에 참여해도 계속 유지돼요.",
+          "forest",
+          now,
+          now,
+          JSON.stringify({ allowEditorShare: true, allowViewerInsights: true }),
+          actorId,
+        );
+        personal = { id, name: getPersonalWorkspaceName(name) };
+      } else {
+        const previousOwner = database.prepare(`
+          SELECT name FROM workspace_members WHERE workspace_id = ? AND member_id = ?
+        `).get(personal.id, actorId);
+        if (previousOwner && personal.name === getPersonalWorkspaceName(previousOwner.name)) {
+          const nextName = getPersonalWorkspaceName(name);
+          if (personal.name !== nextName) {
+            database.prepare("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?")
+              .run(nextName, now, personal.id);
+            personal.name = nextName;
+          }
+        }
+      }
+
+      database.prepare(`
+        INSERT INTO workspace_members (workspace_id, member_id, name, username, role, joined_at)
+        VALUES (?, ?, ?, ?, 'owner', ?)
+        ON CONFLICT(workspace_id, member_id) DO UPDATE SET
+          name = excluded.name,
+          username = excluded.username,
+          role = 'owner'
+      `).run(personal.id, actorId, name, username, now);
+      database.prepare("DELETE FROM workspace_members WHERE workspace_id = ? AND member_id <> ?")
+        .run(personal.id, actorId);
+
+      return publicWorkspace(getWorkspaceRecord(personal.id));
+    });
+  }
+
+  function ensurePersonalWorkspacesForRegisteredUsers() {
+    const users = database.prepare("SELECT id, name, username FROM users ORDER BY created_at, id").all();
+    for (const user of users) ensurePersonalWorkspaceRecord(user);
+  }
+
   function insertDefaultWorkspace() {
     const now = Date.now();
     database.prepare(`
@@ -221,6 +309,7 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
       if (getWorkspaceCount() === 0) insertDefaultWorkspace();
     });
   }
+  ensurePersonalWorkspacesForRegisteredUsers();
 
   function createGuestWorkspace(actor) {
     const actorId = cleanId(actor?.id);
@@ -263,30 +352,31 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
   return {
     async listWorkspaces(actorId) {
       pruneExpiredGuestWorkspaces();
+      if (actorId !== undefined) {
+        const account = database.prepare("SELECT id, name, username FROM users WHERE id = ?").get(actorId);
+        if (account) ensurePersonalWorkspaceRecord(account);
+      }
       const ids = actorId === undefined
         ? statements.workspaces.all().map((row) => row.id)
         : database.prepare(`
           SELECT w.id FROM workspaces AS w
           INNER JOIN workspace_members AS m ON m.workspace_id = w.id
-          WHERE m.member_id = ? ORDER BY w.created_at, w.id
+          WHERE m.member_id = ?
+          ORDER BY CASE WHEN w.personal_owner_id = m.member_id THEN 0 ELSE 1 END, w.created_at, w.id
         `).all(actorId).map((row) => row.id);
       return ids.map((id) => publicWorkspace(getWorkspaceRecord(id)));
+    },
+
+    async ensurePersonalWorkspace(actor) {
+      if (actor?.isGuest) return createGuestWorkspace(actor);
+      return ensurePersonalWorkspaceRecord(actor);
     },
 
     async ensureDefaultMembership(actor) {
       pruneExpiredGuestWorkspaces();
       if (actor?.isGuest) return [createGuestWorkspace(actor)];
-      const mine = await this.listWorkspaces(actor.id);
-      if (mine.length > 0) return mine;
-      // 신규 회원을 다른 사람의 팀(예: 프로덕트 팀)에 자동으로 넣지 않는다.
-      // 혼자 쓰는 개인 공간을 하나 만들어 주고, 팀은 직접 만들거나 초대 링크로 참여한다.
-      const displayName = cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" });
-      return [await this.createWorkspace({
-        actor,
-        name: `${displayName}님의 개인 공간`.slice(0, LIMITS.workspaceName),
-        description: "나만 보는 개인 공간이에요. 팀과 함께 쓰려면 새 팀을 만들거나 초대 링크로 참여하세요.",
-        color: "forest",
-      })];
+      ensurePersonalWorkspaceRecord(actor);
+      return this.listWorkspaces(actor.id);
     },
 
     async deleteGuestWorkspaces(actorId) {
@@ -303,6 +393,7 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
     async createWorkspace({ actor, name, description, color }) {
       pruneExpiredGuestWorkspaces();
       const actorId = cleanId(actor?.id);
+      if (!actor?.isGuest) ensurePersonalWorkspaceRecord(actor);
       const cleanName = cleanText(name, LIMITS.workspaceName, { required: true, label: "워크스페이스 이름" });
       const cleanDescription = cleanText(description, LIMITS.description, { label: "설명" });
       const now = Date.now();
@@ -331,10 +422,17 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
     async joinWorkspace(workspaceId, { actor }) {
       pruneExpiredGuestWorkspaces();
       const actorId = cleanId(actor?.id);
+      if (!actor?.isGuest) ensurePersonalWorkspaceRecord(actor);
       const name = cleanText(actor?.name, LIMITS.memberName, { required: true, label: "이름" });
       const username = cleanText(actor?.username, LIMITS.username, { label: "아이디" });
       withTransaction(database, () => {
         const workspace = getWorkspaceRecord(workspaceId);
+        if (workspace.personalOwnerId && workspace.personalOwnerId !== actorId) {
+          throw new WorkspaceError(403, "PERSONAL_WORKSPACE_PRIVATE", "이 개인 공간은 소유자만 사용할 수 있어요.");
+        }
+        if (workspace.guestOwnerId && workspace.guestOwnerId !== actorId) {
+          throw new WorkspaceError(403, "GUEST_WORKSPACE_PRIVATE", "이 게스트 공간은 만든 사람만 사용할 수 있어요.");
+        }
         const existing = findMember(workspace, actorId);
         if (existing) {
           database.prepare("UPDATE workspace_members SET name = ?, username = ? WHERE workspace_id = ? AND member_id = ?")
@@ -375,6 +473,9 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
       return withTransaction(database, () => {
         const workspace = getWorkspaceRecord(workspaceId);
         requireMember(workspace, actorId, ["owner"]);
+        if (workspace.personalOwnerId) {
+          throw new WorkspaceError(400, "PERSONAL_WORKSPACE", "개인 공간은 삭제할 수 없어요. 계속 보관됩니다.");
+        }
         if (getWorkspaceCount() <= 1) throw new WorkspaceError(400, "LAST_WORKSPACE", "마지막 워크스페이스는 삭제할 수 없어요.");
         database.prepare("DELETE FROM workspaces WHERE id = ?").run(workspaceId);
         return { id: workspaceId };
@@ -389,6 +490,9 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
         if (!ROLES.includes(role)) throw new WorkspaceError(400, "INVALID_INPUT", "지원하지 않는 역할이에요.");
         const member = findMember(workspace, memberId);
         if (!member) throw new WorkspaceError(404, "MEMBER_NOT_FOUND", "멤버를 찾을 수 없어요.");
+        if (workspace.personalOwnerId && memberId === workspace.personalOwnerId && role !== "owner") {
+          throw new WorkspaceError(400, "PERSONAL_WORKSPACE_OWNER", "개인 공간의 소유자 권한은 바꿀 수 없어요.");
+        }
         const owners = workspace.members.filter((item) => item.role === "owner");
         if (member.role === "owner" && role !== "owner" && owners.length <= 1) {
           throw new WorkspaceError(400, "LAST_OWNER", "관리자가 최소 한 명은 있어야 해요.");
@@ -406,6 +510,9 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
         requireMember(workspace, actorId, actorId === memberId ? ROLES : ["owner"]);
         const member = findMember(workspace, memberId);
         if (!member) throw new WorkspaceError(404, "MEMBER_NOT_FOUND", "멤버를 찾을 수 없어요.");
+        if (workspace.personalOwnerId && memberId === workspace.personalOwnerId) {
+          throw new WorkspaceError(400, "PERSONAL_WORKSPACE_OWNER", "개인 공간의 소유자는 나갈 수 없어요.");
+        }
         const owners = workspace.members.filter((item) => item.role === "owner");
         if (member.role === "owner" && owners.length <= 1) {
           throw new WorkspaceError(400, "LAST_OWNER", "마지막 관리자는 나갈 수 없어요. 다른 멤버를 관리자로 지정해 주세요.");
@@ -420,6 +527,16 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
       const name = cleanText(user.name, LIMITS.memberName, { required: true, label: "이름" });
       const username = cleanText(user.username, LIMITS.username, { label: "아이디" });
       withTransaction(database, () => {
+        const personal = database.prepare(`
+          SELECT w.id, w.name, m.name AS member_name
+          FROM workspaces AS w
+          INNER JOIN workspace_members AS m ON m.workspace_id = w.id
+          WHERE w.personal_owner_id = ? AND m.member_id = ?
+        `).get(user.id, user.id);
+        if (personal && personal.name === getPersonalWorkspaceName(personal.member_name)) {
+          database.prepare("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?")
+            .run(getPersonalWorkspaceName(name), Date.now(), personal.id);
+        }
         database.prepare("UPDATE workspace_members SET name = ?, username = ? WHERE member_id = ?").run(name, username, user.id);
       });
     },

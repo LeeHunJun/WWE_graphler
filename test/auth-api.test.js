@@ -35,6 +35,28 @@ function createResponse() {
   };
 }
 
+test("회원가입이 끝나면 새 계정의 개인 공간도 즉시 준비됩니다", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-personal-signup-"));
+  const database = await openDatabase({ dataDir });
+  try {
+    const authStore = createAuthStore({ database });
+    const workspaceStore = createWorkspaceStore({ database });
+    const response = await requestAuth("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({ name: "민서", username: "minseo_personal", password: "safe-pass-3" }),
+    }, { authStore, workspaceStore });
+
+    assert.equal(response.status, 201);
+    const workspaces = await workspaceStore.listWorkspaces(response.json.user.id);
+    assert.equal(workspaces.length, 1);
+    assert.equal(workspaces[0].name, "민서님의 개인 공간");
+    assert.equal(workspaces[0].isPersonal, true);
+  } finally {
+    database.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 async function requestAuth(url, options, context) {
   const response = createResponse();
   await handleAuthApi(createRequest(url, options), response, context);
