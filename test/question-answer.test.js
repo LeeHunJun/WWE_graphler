@@ -78,3 +78,34 @@ test("0/1 열을 연도로 오인하지 않고, 기록형 표는 요인 비교 �
   assert.ok(spec.visuals.some((visual) => visual.title === "성별별 생존률"));
   assert.ok(suggestQuestions(loadCsvFixture("titanic-style-survival.csv")).length > 0);
 });
+
+test("부가 정보에만 있던 원인 분석 그래프도 질문하면 바로 그래프로 보여 준다", () => {
+  const sales = loadCsvFixture("monthly-sales-drivers.csv");
+  const decomposition = answerQuestion(sales, "매출 감소를 분해해줘");
+  assert.ok(decomposition.spec.visuals.length > 0);
+  assert.ok(decomposition.spec.visuals.every((visual) => visual.id.includes("driver-decomposition")));
+  assert.ok(decomposition.sentences[0].text.includes("방문수"));
+
+  const comovers = answerQuestion(sales, "2025-06에 함께 바뀐 지표");
+  assert.equal(comovers.status, "answered");
+  assert.deepEqual(comovers.spec.visuals.map((visual) => visual.id), ["question-driver-comovers"]);
+
+  const byPromotion = answerQuestion(sales, "프로모션에 따라 매출이 달라?");
+  assert.equal(byPromotion.spec.visuals[0].id, "question-driver-factor-10");
+  assert.ok(byPromotion.sentences[0].text.startsWith("프로모션에 따라 매출이"));
+
+  const titanic = loadCsvFixture("titanic-style-survival.csv");
+  const combination = answerQuestion(titanic, "성별과 요금 조합으로 보면?");
+  assert.deepEqual(combination.spec.visuals.map((visual) => visual.title), ["성별 × 요금 조합별 생존률"]);
+  for (const answer of [decomposition, comovers, byPromotion, combination]) assertValidSpec(answer);
+});
+
+test("부가 정보의 그래프 제목을 그대로 물어도 그래프가 나온다", () => {
+  for (const name of ["monthly-sales-drivers.csv", "titanic-style-survival.csv"]) {
+    const record = loadCsvFixture(name);
+    const titles = buildSpreadsheetVisualizationSpec(record).visuals.map((visual) => visual.title);
+    for (const title of titles) {
+      assert.ok(answerQuestion(record, title).spec.visuals.length > 0, `${name}: ${title}`);
+    }
+  }
+});

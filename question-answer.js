@@ -3,7 +3,7 @@
 
 import { analyzeDrivers, buildDriverVisualSpec, formatValue, josa, profileColumns } from "./driver-analysis.js";
 import { explainPeriod, measureName, valueText } from "./highlight-explain.js";
-import { buildColumnVisuals } from "./visualization.js";
+import { buildColumnVisuals, buildSpreadsheetVisualizationSpec } from "./visualization.js";
 
 const INTENT_PATTERNS = {
   why: /왜|이유|원인|영향|요인|때문|좌우|결정|관련|상관|차이|달라/,
@@ -11,6 +11,55 @@ const INTENT_PATTERNS = {
   extreme: /가장|제일|최고|최대|최저|최소|순위|많은|적은|높은|낮은|top|best|worst/i,
 };
 const VALUE_KINDS = new Set(["numeric", "numeric_discrete", "binary"]);
+
+// 'AI 요약' 부가 정보에 있는 원인 분석 그래프를 질문으로도 바로 볼 수 있게, 주제 단어로 해당 그래프를 고른다.
+const TOPIC_PATTERNS = [
+  { key: "decomposition", pattern: /분해|구성|기여|비중|쪼개|나눠\s*보/, ids: (id) => id.startsWith("driver-decomposition") },
+  { key: "comovers", pattern: /함께\s*(바뀐|변한|움직)|같이\s*(바뀐|변한|움직)|동시에|관련\s*지표|따라\s*움직/, ids: (id) => id === "driver-comovers" },
+  { key: "combination", pattern: /조합|×|교차|함께\s*보|같이\s*보/, ids: (id) => id === "driver-combination" },
+  { key: "ranking", pattern: /순위|요인|무엇이\s*영향|뭐가\s*영향|영향.*(큰|많)/, ids: (id) => id === "driver-ranking" },
+];
+const GROUP_PATTERN = /별|따라|기준|나눠|그룹/;
+
+export function detectTopics(question, matchedNames = []) {
+  let text = String(question || "");
+  // "성별"처럼 열 이름 안에 든 '별'을 그룹 질문으로 오해하지 않도록 열 이름은 지우고 본다.
+  matchedNames.forEach((name) => { text = text.split(name).join(" "); });
+  const topics = TOPIC_PATTERNS.filter((topic) => topic.pattern.test(text)).map((topic) => topic.key);
+  if (GROUP_PATTERN.test(text)) topics.push("group");
+  return topics;
+}
+
+function topicInsightSentences(result, visualIds) {
+  const wanted = visualIds.map((id) => id
+    .replace(/^driver-decomposition-/, "decomposition-")
+    .replace(/^driver-comovers$/, "comover-")
+    .replace(/^driver-combination$/, "combination")
+    .replace(/^driver-factor-/, "factor-"));
+  return result.insights
+    .filter((insight) => wanted.some((id) => insight.id === id || insight.id.startsWith(id)))
+    .slice(0, 3)
+    .map((insight) => ({ level: insight.level, text: insight.sentence }));
+}
+
+function normalizeTitle(text) {
+  return String(text || "").toLocaleLowerCase("ko").replace(/\([^)]*\)/g, "").replace(/[\s·×,.:?!~]+/g, "");
+}
+
+// 질문 글자와 그래프 제목이 가장 많이 겹치는 그래프(2글자 이상 단어 기준)를 고른다.
+function bestTitleMatch(question, visuals) {
+  const words = String(question || "").split(/[\s,.?!·]+/)
+    .map((word) => word.replace(/(은|는|이|가|을|를|의|에|에서|으로|로|과|와|도|만|좀|요)$/, ""))
+    .map(normalizeTitle)
+    .filter((word) => word.length >= 2);
+  let best = null;
+  visuals.forEach((visual) => {
+    const title = normalizeTitle(visual.title);
+    const score = words.filter((word) => title.includes(word)).length;
+    if (score > 0 && (!best || score > best.score)) best = { visual, score };
+  });
+  return best?.visual || null;
+}
 const GROUP_KINDS = new Set(["categorical", "binary", "numeric_discrete", "numeric"]);
 
 function normalize(text) {
@@ -78,7 +127,7 @@ function recordSentences(result, factorIndex = null) {
   if (rank === 0) {
     sentences.push({ level: "critical", text: `${measure}에 가장 큰 영향을 준 건 ${ending(focus.baseName)}. ${ending(listed)}.` });
   } else {
-    sentences.push({ level: "important", text: `${focus.baseName}에 따라 ${measure}${josa(measure, "이/가")} ${listed}로 달라요.` });
+    sentences.push({ level: "important", text: `${focus.baseName}에 따라 ${measure}${josa(measure, "이/가")} ${listed}${josa(listed, "으로/로")} 달라요.` });
     if (rank > 0) sentences.push({ level: "info", text: `${focus.baseName}${josa(focus.baseName, "은/는")} 영향이 ${rank + 1}번째로 큰 요인이고, 가장 큰 요인은 ${ending(ranked[0].baseName)}.` });
     else sentences.push({ level: "info", text: `${focus.baseName}${josa(focus.baseName, "은/는")} ${measure}에 주는 영향이 거의 없어요.` });
   }
@@ -170,7 +219,8 @@ export function answerQuestion(record, question) {
   const targetProfile = valueColumns[0] || null;
   const factorProfile = usable.find((profile) => profile !== targetProfile && GROUP_KINDS.has(profile.kind)) || null;
 
-  if (usable.length === 0 && !intents.why && !intents.trend && !intents.extreme) {
+  const topics = detectTopics(text, matched.flatMap((profile) => [profile.name, profile.baseName]));
+  if (usable.length === 0 && !intents.why && !intents.trend && !intents.extreme && topics.length === 0) {
     const available = profiles.filter((profile) => profile.kind !== "empty" && profile.kind !== "id").map((profile) => profile.baseName).slice(0, 8);
     return {
       ...base,
@@ -261,6 +311,48 @@ export function answerQuestion(record, question) {
       sentences = recordSentences(result, factorProfile.index);
       const bar = buildDriverVisualSpec(result, record).visuals.find((visual) => visual.id === `driver-factor-${factorProfile.index}`);
       if (bar) visuals.push(bar);
+    }
+  }
+
+  // 부가 정보에만 있던 그래프(변화 분해·함께 바뀐 지표·조합·요인 순위·그룹별 비교)를 질문에 맞으면 앞에 둔다.
+  if (topics.length > 0 || visuals.length === 0) {
+    try {
+      // 조합·요인 순위는 질문에 열이 여럿 나와도 표의 대표 결과(예: 생존) 기준으로 본다.
+      const useDefault = topics.includes("combination") || (topics.includes("ranking") && !targetProfile);
+      const topicResult = !useDefault && result?.status === "ok" ? result : defaultResult;
+      const driverVisuals = topicResult?.status === "ok" ? buildDriverVisualSpec(topicResult, record).visuals : [];
+      const picked = [];
+      TOPIC_PATTERNS.filter((topic) => topics.includes(topic.key)).forEach((topic) => {
+        picked.push(...driverVisuals.filter((visual) => topic.ids(visual.id)));
+      });
+      if (topics.includes("group") && factorProfile) {
+        const bar = driverVisuals.find((visual) => visual.id === `driver-factor-${factorProfile.index}`);
+        if (bar) picked.push(bar);
+      }
+      if (picked.length === 0 && visuals.length === 0) {
+        const fallback = bestTitleMatch(text, [...driverVisuals, ...(buildSpreadsheetVisualizationSpec(record).visuals || [])]);
+        if (fallback) picked.push(fallback);
+      }
+      if (picked.length > 0) {
+        const pickedIds = new Set(picked.map((visual) => visual.id));
+        const detailTopics = topics.filter((topic) => ["decomposition", "comovers", "combination"].includes(topic));
+        // 분해·함께 바뀐 지표·조합을 물으면 그 그래프만, 그 밖에는 고른 그래프를 맨 앞에 둔다.
+        visuals.splice(0, visuals.length, ...picked, ...(detailTopics.length > 0 ? [] : visuals.filter((visual) => !pickedIds.has(visual.id))));
+        if (detailTopics.length > 0 && topicResult?.status === "ok") {
+          // 분해·함께 바뀐 지표·조합은 그 그래프의 해석 문장을 답으로 쓴다.
+          const detailIds = [...pickedIds].filter((id) => !id.startsWith("driver-factor-") && id !== "driver-ranking");
+          const topicSentences = topicInsightSentences(topicResult, detailIds);
+          if (topicSentences.length > 0) sentences = topicSentences;
+        } else if (topics.includes("group") && factorProfile && topicResult?.status === "ok"
+          && topicResult.factors.some((factor) => factor.columnIndex === factorProfile.index)) {
+          // "○○별/○○에 따라" 질문은 그룹별 값 비교 문장으로 답한다.
+          sentences = recordSentences(topicResult, factorProfile.index);
+        } else if (sentences.length === 0 && topicResult?.status === "ok") {
+          sentences = topicInsightSentences(topicResult, [...pickedIds]);
+        }
+      }
+    } catch {
+      // 주제 그래프를 못 고르면 기존 답만 보여 준다.
     }
   }
 
