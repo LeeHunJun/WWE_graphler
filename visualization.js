@@ -2,7 +2,7 @@ import Chart from "chart.js/auto";
 import { parseNumber, parseTemporal } from "./value-parsing.js";
 import { INSIGHT_LEVEL_LABELS, sortInsightsByPriority } from "./insight-priority.js";
 import { explainHighlight } from "./highlight-explain.js";
-import { analyzeDrivers, buildDriverVisualSpec } from "./driver-analysis.js";
+import { analyzeDrivers, buildDriverVisualSpec, suggestTargets } from "./driver-analysis.js";
 
 export { parseTemporal };
 
@@ -141,7 +141,12 @@ function findLargestDrop(seriesEntries, points, labels, pointIndexByRow) {
 
 // allowDrop: 시간 순서가 있는 선 그래프에서만 '하락'을 찾는다(크기순으로 정렬한 막대에서는 의미 없음).
 // allowMinimum: 상위 10개만 보여 주는 막대에서는 그중 가장 작은 값이 전체 최저가 아니므로 '최저'를 붙이지 않는다.
-function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, unit = "", { allowDrop = true, allowMinimum = true } = {}) {
+// primarySeriesId: 여러 선을 함께 그릴 때, 단위·의미가 다른 선끼리 최고·최저를 섞어 고르지 않도록
+// 표의 대표 지표(예: 처리건수) 한 선에서만 하락·최고·최저를 찾는다.
+function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, unit = "", { allowDrop = true, allowMinimum = true, primarySeriesId = null } = {}) {
+  if (primarySeriesId && seriesEntries.some((series) => series.id === primarySeriesId)) {
+    seriesEntries = seriesEntries.filter((series) => series.id === primarySeriesId);
+  }
   const observations = [];
   seriesEntries.forEach((series) => {
     points.forEach((point) => {
@@ -190,6 +195,9 @@ function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, un
   const visibleObservations = observations.filter((item) => item.visualIndex !== undefined);
   const isTied = (observation) => observation
     && visibleObservations.filter((item) => item.value === observation.value).length > 1;
+  // 평균과 크게(15% 이상) 다를 때만 '중요', 아니면 '참고'로 둔다.
+  const mean = visibleObservations.reduce((sum, item) => sum + item.value, 0) / Math.max(1, visibleObservations.length);
+  const levelOf = (value) => (mean !== 0 && Math.abs(value - mean) / Math.abs(mean) >= 0.15 ? "important" : "info");
   [
     { observation: maximum, label: "최고", reason: "이 시각화에서 가장 높은 수치입니다." },
     { observation: allowMinimum ? minimum : null, label: "최저", reason: "이 시각화에서 가장 낮은 수치입니다." },
@@ -203,7 +211,7 @@ function createAutoHighlights(seriesEntries, points, labels, pointIndexByRow, un
 
     highlights.push({
       target: { series_id: observation.seriesId, point_index: observation.visualIndex },
-      level: "important",
+      level: levelOf(observation.value),
       label: `${label} ${formatNumber(observation.value, observation.unit)}`,
       reason: `${reason} 해당 값은 ${formatNumber(observation.value, observation.unit)}입니다.`,
       source_ids: [observation.sourceId],
@@ -263,12 +271,21 @@ function createAutoVisual(sheet, sheetIndex, axis, numericColumns) {
     }));
     const labels = points.map((point) => point.label);
     const pointIndexByRow = new Map(points.map((point, index) => [point.sourceId, index]));
-    const primaryUnit = selectedColumns[0]?.unit || "";
+    // 대표 지표: 원인 분석이 결과로 보는 열(예: 매출·처리건수)이 그려진 선이면 그것, 아니면 첫 선.
+    let primaryColumn = selectedColumns[0];
+    try {
+      const targetIndex = suggestTargets(sheet).find((target) => selectedColumns.some((column) => column.index === target.index))?.index;
+      primaryColumn = selectedColumns.find((column) => column.index === targetIndex) || primaryColumn;
+    } catch {
+      // 대표 지표를 못 고르면 첫 선을 쓴다.
+    }
+    const captionColumns = [primaryColumn, ...selectedColumns.filter((column) => column !== primaryColumn)];
+    const primaryUnit = primaryColumn?.unit || "";
     const visual = {
       id: `auto-sheet-${sheetIndex}-line`,
       type: "line_chart",
       title: `${sheet.name} · ${selectedColumns.length > 1 ? "수치 추이" : selectedColumns[0]?.name || "수치 추이"}`,
-      caption: createCaption(points, selectedColumns.map((column) => ({ id: column.id, name: column.name, column })), primaryUnit),
+      caption: createCaption(points, captionColumns.map((column) => ({ id: column.id, name: column.name, column })), primaryUnit),
       source_ids: [...new Set(points.map((point) => point.sourceId))],
       data: {
         labels,
@@ -282,6 +299,7 @@ function createAutoVisual(sheet, sheetIndex, axis, numericColumns) {
         labels,
         pointIndexByRow,
         primaryUnit,
+        { primarySeriesId: primaryColumn?.id },
       ),
     };
     return [visual];
