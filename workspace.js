@@ -112,7 +112,6 @@ export function initWorkspace(hooks) {
     profileMenu: $("#profile-menu"),
     userAvatar: $("#user-avatar"),
     userName: $("#user-name"),
-    settingsButton: $("#open-team-settings"),
     sharedCount: $("#sidebar-shared-count"),
     insightCount: $("#sidebar-insight-count"),
     sharedView: $("#shared-view"),
@@ -166,8 +165,13 @@ export function initWorkspace(hooks) {
   }
 
   function canShare() {
+    if (state.workspace?.isPersonal) return false;
     const role = myRole();
     return role === "owner" || (role === "editor" && state.workspace?.settings?.allowEditorShare !== false);
+  }
+
+  function isPersonalWorkspace() {
+    return Boolean(state.workspace?.isPersonal);
   }
 
   function canSaveInsight() {
@@ -274,7 +278,6 @@ export function initWorkspace(hooks) {
 
     elements.userAvatar.textContent = initialOf(state.profile.name);
     elements.userName.textContent = state.profile.name;
-    elements.settingsButton.hidden = state.profile.isGuest;
     elements.sharedCount.textContent = String(state.sharedDocuments.length);
     elements.insightCount.textContent = String(state.insights.length);
   }
@@ -306,6 +309,15 @@ export function initWorkspace(hooks) {
     return span;
   }
 
+  function workspaceSettingsIcon() {
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("viewBox", "0 0 20 20");
+    icon.setAttribute("class", "workspace-menu-settings-icon");
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = '<circle cx="10" cy="10" r="3" /><path d="m16.2 11.8 1.1.9-1.4 2.4-1.4-.5a6.8 6.8 0 0 1-1.7 1l-.3 1.5h-2.8l-.3-1.5a6.8 6.8 0 0 1-1.7-1l-1.4.5-1.4-2.4 1.1-.9a6.3 6.3 0 0 1 0-2l-1.1-.9 1.4-2.4 1.4.5a6.8 6.8 0 0 1 1.7-1l.3-1.5h2.8l.3 1.5a6.8 6.8 0 0 1 1.7 1l1.4-.5 1.4 2.4-1.1.9a6.3 6.3 0 0 1 0 2Z" />';
+    return icon;
+  }
+
   function renderWorkspaceMenu() {
     const menu = elements.workspaceMenu;
     menu.replaceChildren();
@@ -333,7 +345,11 @@ export function initWorkspace(hooks) {
     if (!state.profile.isGuest) {
       menu.append(el("hr", "menu-divider"));
       menu.append(menuItem("새 워크스페이스 만들기", { onClick: openCreateWorkspaceDialog }));
-      menu.append(menuItem("팀 설정", { onClick: openTeamSettings }));
+      menu.append(menuItem("워크스페이스 설정", {
+        description: state.workspace?.name || "현재 워크스페이스",
+        icon: workspaceSettingsIcon(),
+        onClick: openTeamSettings,
+      }));
     }
   }
 
@@ -364,13 +380,17 @@ export function initWorkspace(hooks) {
         }));
       });
       mobileSwitch.append(menuItem("새 워크스페이스 만들기", { onClick: openCreateWorkspaceDialog }));
+      mobileSwitch.append(menuItem("워크스페이스 설정", {
+        description: state.workspace?.name || "현재 워크스페이스",
+        icon: workspaceSettingsIcon(),
+        onClick: openTeamSettings,
+      }));
       mobileSwitch.append(el("hr", "menu-divider"));
       menu.append(mobileSwitch);
     }
     if (!state.profile.isGuest) menu.append(menuItem("프로필 편집", { description: "이름과 비밀번호를 바꿔요", onClick: openProfileDialog }));
     menu.append(menuItem("저장한 인사이트", { description: `${state.insights.length}개`, onClick: () => navigate("insights") }));
     menu.append(menuItem("공유 문서", { description: `${state.sharedDocuments.length}개`, onClick: () => navigate("shared") }));
-    if (!state.profile.isGuest) menu.append(menuItem("팀 설정", { onClick: openTeamSettings }));
     menu.append(el("hr", "menu-divider"));
     menu.append(menuItem("로그아웃", {
       description: state.profile.isGuest ? "체험 종료 · 저장한 자료 삭제" : `@${state.profile.username}`,
@@ -668,18 +688,27 @@ export function initWorkspace(hooks) {
     const workspace = state.workspace;
     const form = $("#team-settings-form");
     const isOwner = myRole() === "owner";
-    $("#team-settings-role").textContent = isOwner
-      ? "관리자로 설정을 바꿀 수 있어요."
-      : `${ROLE_LABELS[myRole()] || "멤버"} 권한이라 설정은 볼 수만 있어요. 관리자에게 변경을 요청해 주세요.`;
+    const isPersonal = Boolean(workspace.isPersonal);
+    $("#team-settings-eyebrow").textContent = isPersonal ? "PERSONAL SPACE" : "TEAM SETTINGS";
+    $("#team-settings-title").textContent = isPersonal ? "개인 공간 설정" : "팀 설정";
+    $("#team-settings-role").textContent = isPersonal
+      ? "개인 공간은 나만 볼 수 있어요. 문서 공유와 팀 초대는 팀 워크스페이스에서 이용해 주세요."
+      : isOwner
+        ? "관리자로 설정을 바꿀 수 있어요."
+        : `${ROLE_LABELS[myRole()] || "멤버"} 권한이라 설정은 볼 수만 있어요. 관리자에게 변경을 요청해 주세요.`;
     form.elements.name.value = workspace.name;
     form.elements.description.value = workspace.description || "";
     form.querySelectorAll("input[name=color]").forEach((input) => { input.checked = input.value === workspace.color; });
     form.elements.allowEditorShare.checked = workspace.settings?.allowEditorShare !== false;
     form.elements.allowViewerInsights.checked = workspace.settings?.allowViewerInsights !== false;
+    form.querySelectorAll(".team-check").forEach((label) => { label.hidden = isPersonal; });
+    form.querySelectorAll("h3")[1].hidden = isPersonal;
     form.querySelectorAll("input, textarea").forEach((input) => { input.disabled = !isOwner; });
     form.querySelector("[type=submit]").hidden = !isOwner;
     $("#team-invite-link").value = `${window.location.origin}${window.location.pathname}?workspace=${encodeURIComponent(workspace.id)}`;
 
+    $("#team-members-title").closest(".team-settings-section").hidden = isPersonal;
+    $(".team-danger-zone").hidden = isPersonal;
     const memberList = $("#team-member-list");
     memberList.replaceChildren();
     $("#team-member-count").textContent = `${workspace.members.length}명`;
@@ -735,7 +764,7 @@ export function initWorkspace(hooks) {
       memberList.append(row);
     });
 
-    $("#team-delete-workspace").hidden = !isOwner;
+    $("#team-delete-workspace").hidden = !isOwner || isPersonal;
     $("#team-delete-workspace").disabled = state.workspaces.length <= 1;
     $("#team-delete-workspace").title = state.workspaces.length <= 1 ? "마지막 워크스페이스는 삭제할 수 없어요." : "";
   }
@@ -775,10 +804,16 @@ export function initWorkspace(hooks) {
 
   function openShareDialog(record) {
     if (!record || !requireOnline()) return;
+    if (isPersonalWorkspace()) {
+      hooks.showToast("개인 공간에서는 문서를 공유할 수 없어요. 팀 워크스페이스로 전환해 주세요.");
+      return;
+    }
     if (!canShare()) {
-      hooks.showToast(myRole() === "viewer"
-        ? "보기 전용 멤버는 문서를 공유할 수 없어요."
-        : "이 워크스페이스는 관리자만 문서를 공유할 수 있어요.");
+      hooks.showToast(isPersonalWorkspace()
+        ? "개인 공간에서는 문서를 공유할 수 없어요. 팀 워크스페이스로 전환해 주세요."
+        : myRole() === "viewer"
+          ? "보기 전용 멤버는 문서를 공유할 수 없어요."
+          : "이 워크스페이스는 관리자만 문서를 공유할 수 있어요.");
       return;
     }
     const form = $("#share-document-form");
@@ -977,7 +1012,6 @@ export function initWorkspace(hooks) {
     openButton?.focus();
   });
 
-  $("#open-team-settings").addEventListener("click", openTeamSettings);
   elements.saveInsightButton?.addEventListener("click", openSaveInsightDialog);
   elements.sharedSearch.addEventListener("input", renderSharedView);
   elements.insightSearch.addEventListener("input", renderInsightsView);
@@ -1043,7 +1077,7 @@ export function initWorkspace(hooks) {
         },
       });
       applyWorkspace(workspace);
-      hooks.showToast("팀 설정을 저장했어요.");
+      hooks.showToast(state.workspace?.isPersonal ? "개인 공간 설정을 저장했어요." : "팀 설정을 저장했어요.");
     });
   });
 
@@ -1110,6 +1144,8 @@ export function initWorkspace(hooks) {
   return {
     openShareDialog,
     openSaveInsightDialog,
+    canShareDocuments: canShare,
+    isPersonalWorkspace,
     refreshView: renderAll,
     isSharedDocument: (record) => state.sharedDocuments.some((item) => item.originId === record.id || item.id === record.sharedFrom?.documentId),
     sharedWorkspacesFor,

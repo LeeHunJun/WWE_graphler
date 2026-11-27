@@ -117,6 +117,9 @@ test("개인 공간은 삭제할 수 없고 팀을 삭제해도 유지됩니다"
     const mine = await store.listWorkspaces(alice.id);
     const personal = mine.find((item) => item.isPersonal);
     assert.ok(personal, "계정에는 보존되는 개인 공간이 있습니다");
+    await assert.rejects(store.shareDocument(personal.id, { actorId: alice.id, record: csvRecord }), {
+      code: "PERSONAL_WORKSPACE_NO_SHARING",
+    });
     await assert.rejects(store.deleteWorkspace(personal.id, { actorId: alice.id }), { code: "PERSONAL_WORKSPACE" });
     await store.deleteWorkspace(workspace.id, { actorId: alice.id });
     assert.deepEqual((await store.listWorkspaces(alice.id)).map((item) => item.id), [personal.id]);
@@ -210,15 +213,15 @@ test("게스트마다 비공개 체험 공간을 만들고 로그아웃 정리 �
     assert.equal(spaceA.name, "게스트 개인 공간");
     assert.equal(spaceA.id, spaceAAgain.id, "한 게스트는 하나의 개인 공간만 사용합니다");
     assert.notEqual(spaceA.id, spaceB.id, "게스트끼리 공간을 공유하지 않습니다");
+    assert.equal(spaceA.isPersonal, true);
     assert.deepEqual((await store.listWorkspaces(guestA.id)).map((workspace) => workspace.id), [spaceA.id]);
     assert.ok(!((await store.ensureDefaultMembership(alice)).map((workspace) => workspace.id)).includes(spaceA.id));
 
-    const shared = await store.shareDocument(spaceA.id, { actorId: guestA.id, record: csvRecord });
+    await assert.rejects(store.shareDocument(spaceA.id, { actorId: guestA.id, record: csvRecord }), { code: "PERSONAL_WORKSPACE_NO_SHARING" });
     assert.equal((await store.deleteGuestWorkspaces(guestA.id)).count, 1);
     assert.deepEqual(await store.listWorkspaces(guestA.id), []);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM shared_documents WHERE workspace_id = ?").get(spaceA.id).count, 0);
     assert.ok((await store.listWorkspaces(guestB.id)).some((workspace) => workspace.id === spaceB.id));
-    assert.ok(shared.id);
   });
 });
 

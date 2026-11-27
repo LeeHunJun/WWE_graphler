@@ -639,6 +639,8 @@ function createDocumentRow(record) {
   const shareButton = document.createElement("button");
   shareButton.type = "button";
   shareButton.className = "document-share-button";
+  shareButton.hidden = workspace?.isPersonalWorkspace?.() === true;
+  row.classList.toggle("is-personal-workspace", shareButton.hidden);
   const isShared = sharedTo.length > 0 || Boolean(workspace?.isSharedDocument(record));
   shareButton.classList.toggle("is-shared", isShared);
   shareButton.setAttribute("aria-label", `${record.name} 팀에 공유`);

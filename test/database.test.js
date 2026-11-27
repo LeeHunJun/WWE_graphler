@@ -155,7 +155,7 @@ test("한 SQLite 파일을 쓰는 두 서버 연결이 계정과 팀 자료를 �
     const { user } = await firstAuth.signup({ name: "민지", username: "minji_team", password: "safe-pass-1" });
     const [workspace] = await firstWorkspace.ensureDefaultMembership(user);
     const owned = await firstWorkspace.createWorkspace({ actor: user, name: "공유 데이터 팀" });
-    const shared = await firstWorkspace.shareDocument(workspace.id, {
+    const shared = await firstWorkspace.shareDocument(owned.id, {
       actorId: user.id,
       note: "팀원이 같이 보는 자료",
       record: {
@@ -175,8 +175,8 @@ test("한 SQLite 파일을 쓰는 두 서버 연결이 계정과 팀 자료를 �
     assert.equal(login.user.id, user.id);
     assert.ok(workspaces.some((item) => item.id === workspace.id));
     assert.ok(workspaces.some((item) => item.id === owned.id));
-    assert.equal((await secondWorkspace.listSharedDocuments(workspace.id))[0].id, shared.id);
-    const sharedCopy = await secondWorkspace.getSharedDocument(workspace.id, shared.id, { actorId: login.user.id });
+    assert.equal((await secondWorkspace.listSharedDocuments(owned.id))[0].id, shared.id);
+    const sharedCopy = await secondWorkspace.getSharedDocument(owned.id, shared.id, { actorId: login.user.id });
     assert.equal(sharedCopy.record.sheets[0].rows[1][1], "120");
     assert.equal(secondDb.prepare("SELECT COUNT(*) AS count FROM users").get().count, 1);
   } finally {

@@ -129,7 +129,7 @@ function publicWorkspace(workspace) {
     createdAt: workspace.createdAt,
     updatedAt: workspace.updatedAt,
     settings: workspace.settings,
-    isPersonal: Boolean(workspace.personalOwnerId),
+    isPersonal: Boolean(workspace.personalOwnerId || workspace.guestOwnerId),
     members: workspace.members,
     sharedDocumentCount: workspace.sharedDocuments.length,
     insightCount: workspace.insights.length,
@@ -571,6 +571,9 @@ export function createWorkspaceStore({ database, seed = true } = {}) {
       pruneExpiredGuestWorkspaces();
       return withTransaction(database, () => {
         const workspace = getWorkspaceRecord(workspaceId);
+        if (workspace.personalOwnerId || workspace.guestOwnerId) {
+          throw new WorkspaceError(403, "PERSONAL_WORKSPACE_NO_SHARING", "개인 공간에서는 문서를 공유할 수 없어요. 팀 워크스페이스를 선택해 주세요.");
+        }
         const member = requireMember(workspace, actorId, workspace.settings.allowEditorShare ? ["owner", "editor"] : ["owner"]);
         if (workspace.sharedDocuments.length >= LIMITS.sharedDocuments) {
           throw new WorkspaceError(400, "LIMIT_REACHED", "공유 문서 수 한도에 도달했어요.");

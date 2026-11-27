@@ -96,3 +96,66 @@ test("로그인 계정도 멤버가 아닌 팀의 공유 자료를 읽을 수 �
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("개인 워크스페이스는 공유 문서 API도 거부합니다", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-personal-sharing-api-"));
+  const database = await openDatabase({ dataDir });
+  try {
+    const workspaceStore = createWorkspaceStore({ database });
+    const owner = { id: "personal-owner-123", name: "개인 사용자", username: "personal_user" };
+    const [personal] = await workspaceStore.ensureDefaultMembership(owner);
+    const authStore = { getUserBySession: async (token) => (token === "personal-token" ? owner : null) };
+    const response = await requestWorkspace(`/api/workspaces/${personal.id}/shared-documents`, {
+      method: "POST",
+      cookie: "grappler_session=personal-token",
+      body: JSON.stringify({
+        note: "개인 공간 공유 시도",
+        record: {
+          id: "local-personal-document",
+          name: "개인 자료.csv",
+          type: "csv",
+          sheets: [{ name: "자료", rows: [["항목", "값"]], rowCount: 1 }],
+        },
+      }),
+    }, { workspaceStore, authStore });
+
+    assert.equal(response.status, 403);
+    assert.equal(response.json.code, "PERSONAL_WORKSPACE_NO_SHARING");
+    assert.deepEqual(await workspaceStore.listSharedDocuments(personal.id), []);
+  } finally {
+    database.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("팀 워크스페이스의 문서 공유는 계속 사용할 수 있습니다", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grappler-team-sharing-api-"));
+  const database = await openDatabase({ dataDir });
+  try {
+    const workspaceStore = createWorkspaceStore({ database });
+    const member = { id: "team-share-owner-123", name: "팀 사용자", username: "team_share" };
+    const personal = await workspaceStore.ensurePersonalWorkspace(member);
+    const team = await workspaceStore.createWorkspace({ actor: member, name: "공유 팀" });
+    const authStore = { getUserBySession: async (token) => (token === "team-token" ? member : null) };
+    const response = await requestWorkspace(`/api/workspaces/${team.id}/shared-documents`, {
+      method: "POST",
+      cookie: "grappler_session=team-token",
+      body: JSON.stringify({
+        note: "팀 공유",
+        record: {
+          id: "local-team-document",
+          name: "팀 자료.csv",
+          type: "csv",
+          sheets: [{ name: "자료", rows: [["항목", "값"]], rowCount: 1 }],
+        },
+      }),
+    }, { workspaceStore, authStore });
+
+    assert.notEqual(team.id, personal.id);
+    assert.equal(response.status, 201);
+    assert.equal((await workspaceStore.listSharedDocuments(team.id)).length, 1);
+  } finally {
+    database.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

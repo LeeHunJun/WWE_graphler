@@ -336,10 +336,6 @@ svg {
   font-weight: 600;
 }
 
-.sidebar-settings {
-  margin-bottom: 8px;
-}
-
 .sidebar-footnote {
   display: flex;
   justify-content: space-between;
@@ -3591,6 +3587,15 @@ svg {
   font-size: 17px;
 }
 
+.workspace-menu-settings-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: #718076;
+  stroke-width: 1.5;
+}
+
 .menu-divider {
   width: 100%;
   margin: 4px 0;
@@ -3987,6 +3992,10 @@ svg {
   transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
 }
 
+.document-share-button[hidden] {
+  display: none;
+}
+
 .document-share-button:hover {
   border-color: #d6e6d3;
   background: var(--green-pale);
@@ -4204,6 +4213,11 @@ svg {
   border-top: 1px solid #edf1ec;
 }
 
+.team-settings-section[hidden],
+.team-danger-zone[hidden] {
+  display: none;
+}
+
 .team-invite {
   display: flex;
   align-items: flex-end;
@@ -4301,6 +4315,10 @@ svg {
     right: 12px;
     width: min(300px, calc(100vw - 24px));
   }
+}
+
+.document-row.is-personal-workspace {
+  grid-template-columns: minmax(0, 1fr) 30px 32px;
 }
 
 /* ---------- 로그인·회원가입 화면 ---------- */
@@ -4447,10 +4465,6 @@ svg {
   font-size: 12px;
   line-height: 1.6;
   text-align: center;
-}
-
-.sidebar-settings[hidden] {
-  display: none;
 }
 
 /* 질문창: 첨부 파일 아래에서 궁금한 점을 적는다 */
