@@ -341,6 +341,19 @@ function createRecordVisuals(record, sheetIndex) {
   }
 }
 
+// 자동 그래프가 '항목별 막대'가 아니라 '요인 비교'로 그려지는 기록형 표인지(같은 항목 이름이 여러 행에 반복되는 표).
+export function isRecordSheet(sheet) {
+  if (!sheet || !Array.isArray(sheet.rows) || sheet.rows.length < 2) return false;
+  const axis = getAxisColumn(sheet.rows, sheet.columnCount);
+  return Boolean(axis) && isRecordTable(sheet, axis);
+}
+
+// 표의 항목 이름 열(가로축으로 쓰는 열) 위치. 없으면 -1.
+export function getLabelColumnIndex(sheet) {
+  if (!sheet || !Array.isArray(sheet.rows) || sheet.rows.length < 2) return -1;
+  return getAxisColumn(sheet.rows, sheet.columnCount)?.index ?? -1;
+}
+
 // 질문에 답할 때 쓰는, 고른 숫자 열만 담은 그래프(시간 축이면 선, 아니면 막대).
 export function buildColumnVisuals(record, sheetIndex, columnIndexes) {
   const sheet = record?.sheets?.[sheetIndex];

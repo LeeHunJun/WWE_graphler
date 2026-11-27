@@ -141,3 +141,15 @@ test("인수인계 요약: 관련 없는 데이터(생존 기록)에서는 패�
   const result = analyzeHandover({ type: "csv", sheets: [{ name: "titanic", rows, rowNumbers: rows.map((_, index) => index + 1), rowCount: rows.length, columnCount: rows[0].length }] });
   assert.equal(result.status, "insufficient_data");
 });
+
+test("인수인계 샘플: '거래처별 미수금'을 물으면 거래처별 미수금 막대 그래프로 답한다", async () => {
+  const { answerQuestion } = await import("../question-answer.js");
+  for (const question of ["거래처별 미수금", "미수금이 가장 많은 거래처는?"]) {
+    const answer = answerQuestion(record, question);
+    assert.equal(answer.status, "answered", question);
+    assert.equal(answer.spec.visuals[0].type, "bar_chart", question);
+    assert.equal(answer.spec.visuals[0].data.series_name, "미수금(만원)", question);
+    assert.ok(answer.sentences[0].text.startsWith("미수금이 가장 큰 건 해솔식품"), answer.sentences[0].text);
+    assertValidSpec(answer.spec);
+  }
+});

@@ -3,7 +3,7 @@
 
 import { analyzeDrivers, buildDriverVisualSpec, formatValue, josa, plainSentence, profileColumns } from "./driver-analysis.js";
 import { explainPeriod, measureName, valueText } from "./highlight-explain.js";
-import { buildColumnVisuals, buildSpreadsheetVisualizationSpec } from "./visualization.js";
+import { buildColumnVisuals, buildSpreadsheetVisualizationSpec, getLabelColumnIndex, isRecordSheet } from "./visualization.js";
 
 const INTENT_PATTERNS = {
   why: /왜|이유|원인|영향|요인|때문|좌우|결정|관련|상관|차이|달라/,
@@ -155,7 +155,7 @@ function periodTrendSentences(result) {
   ];
 }
 
-function extremeRowSentences(sheet, profiles, columnIndex) {
+function extremeRowSentences(sheet, profiles, columnIndex, labelIndex = -1) {
   const column = profiles[columnIndex];
   const idProfile = profiles.find((profile) => profile.kind === "id");
   const rows = (sheet.rows || []).slice(1)
@@ -164,7 +164,10 @@ function extremeRowSentences(sheet, profiles, columnIndex) {
   if (rows.length === 0) return [];
   const max = rows.reduce((best, row) => (row.value > best.value ? row : best));
   const min = rows.reduce((best, row) => (row.value < best.value ? row : best));
-  const who = (row) => (idProfile ? `${idProfile.baseName} ${row.cells[idProfile.index]}` : `${row.rowNumber}행`);
+  // 항목 이름 열(예: 거래처명)이 있으면 그 이름으로, 없으면 번호 열·행 번호로 부른다.
+  const who = (row) => (labelIndex >= 0 && String(row.cells[labelIndex] ?? "").trim()
+    ? String(row.cells[labelIndex]).trim()
+    : idProfile ? `${idProfile.baseName} ${row.cells[idProfile.index]}` : `${row.rowNumber}행`);
   return [{
     level: "important",
     text: `${column.baseName}${josa(column.baseName, "이/가")} 가장 큰 건 ${who(max)}(${formatValue(max.value, column.unit, 1)}), 가장 작은 건 ${who(min)}(${formatValue(min.value, column.unit, 1)})이에요.`,
@@ -282,7 +285,9 @@ export function answerQuestion(record, question) {
     const columns = usable.filter((profile) => profile.isNumeric && profile.kind !== "binary").map((profile) => profile.index);
     const fallback = targetProfile ? [targetProfile.index] : defaultResult?.target ? [defaultResult.target.index] : [];
     const chosen = columns.length > 0 ? columns : fallback;
-    const recordTable = result?.status === "ok" && result.mode === "records";
+    // 같은 항목이 여러 행에 반복되는 기록형 표(승객 목록 등)만 요인 비교로 답하고,
+    // 거래처 목록처럼 항목마다 한 행인 표는 '항목별 막대'(상위 10개)로 바로 보여 준다.
+    const recordTable = result?.status === "ok" && result.mode === "records" && isRecordSheet(record.sheets[sheetIndex]);
     if (recordTable && chosen.length > 0) {
       // 기록형 표(승객 목록 등)는 행마다 막대를 그리지 않고, 최고·최저 행을 문장으로 알려 준 뒤 구간별 비교를 보여 준다.
       sentences = extremeRowSentences(record.sheets[sheetIndex], profiles, chosen[0]);
@@ -301,6 +306,10 @@ export function answerQuestion(record, question) {
       }
     } else {
       visuals.push(...buildColumnVisuals(record, sheetIndex, chosen));
+      const sheet = record.sheets[sheetIndex];
+      const labelIndex = getLabelColumnIndex(sheet);
+      const isBar = visuals[0]?.type === "bar_chart";
+      if (isBar && chosen.length > 0) sentences = extremeRowSentences(sheet, profiles, chosen[0], labelIndex);
     }
     if (isPeriods && (columns.length <= 1)) {
       sentences = periodTrendSentences(result);
