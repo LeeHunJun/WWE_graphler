@@ -23,7 +23,7 @@ const SAMPLE_DOCUMENT_ID = "grappler-sample-work-report";
 const UNREADABLE_MESSAGE = "파일의 내용을 읽을 수 없습니다. 파일을 확인한 후 다시 업로드해 주세요";
 const AI_RETRY_MESSAGE = "잠시 후 다시 시도해 주세요";
 // 자동 시각화 규칙이 바뀌면 올린다. 저장된 문서의 자동 그래프를 새 규칙으로 다시 만든다.
-const VISUAL_SPEC_VERSION = 4;
+const VISUAL_SPEC_VERSION = 2;
 const AI_JOB_CLIENT_TIMEOUT_MS = 12 * 60 * 1000;
 const FILE_TYPES = {
   pdf: { label: "PDF", icon: "P", className: "pdf" },

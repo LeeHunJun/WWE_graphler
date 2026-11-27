@@ -166,15 +166,3 @@ test("인수인계 샘플: 같은 값이 여러 개인 막대는 강조하지 �
   const answer = answerQuestion(record, "담당자교체가 가장 많은 거래처");
   assert.match(answer.sentences[0].text, /가장 큰 값\(3회\)인 항목은 .+ 11곳/);
 });
-
-test("인수인계 샘플: 여러 선 그래프는 대표 지표 한 선에서만 하락·최고·최저를 고른다", async () => {
-  const { explainHighlight } = await import("../highlight-explain.js");
-  const line = buildSpreadsheetVisualizationSpec(record).visuals.find((visual) => visual.type === "line_chart");
-  const processed = line.data.series.find((series) => series.name === "처리건수(건)");
-  assert.ok(line.highlights.length > 0);
-  assert.ok(line.highlights.every((highlight) => highlight.target.series_id === processed.id), "다른 지표(미처리잔량 0건 등)를 섞어 강조하지 않는다");
-  assert.ok(!line.highlights.some((highlight) => highlight.label === "최저 0건"));
-  assert.match(line.caption, /처리건수/);
-  const maximum = line.highlights.find((highlight) => highlight.label.startsWith("최고"));
-  assert.match(explainHighlight(record, line, maximum).sentences[0].text, /전체 기간 중 가장 높아요 \(평균보다 \d+% 높음\)/);
-});

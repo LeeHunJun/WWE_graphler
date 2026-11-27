@@ -42,8 +42,7 @@ export function valueText(target, value) {
 
 function amountChangeText(item) {
   const diff = item.to - item.from;
-  // 비율(%) 열의 차이는 %p로 쓴다(94.7% → 93.3%는 1.4%p 감소).
-  const amount = formatValue(Math.abs(diff), item.unit === "%" ? "%p" : item.unit, Number.isInteger(diff) ? 0 : 1);
+  const amount = formatValue(Math.abs(diff), item.unit, Number.isInteger(diff) ? 0 : 1);
   return `${formatValue(item.from, item.unit, 1)} → ${formatValue(item.to, item.unit, 1)}, ${amount} ${diff < 0 ? "감소" : "증가"}`;
 }
 
@@ -210,17 +209,8 @@ export function explainHighlight(record, visual, highlight) {
       if (focus >= 1 && focus !== result.period.focusIndex) {
         result = analyzeDrivers(record, { sheetIndex: location.sheetIndex, targetIndex: result.target.index, focusPeriodIndex: focus });
       } else if (focus === 0) {
-        // 첫 기간은 직전과 비교할 수 없으니, 전체 평균과 비교한 사실만 알려 준다.
-        const periods = result.period.periods.filter((item) => Number.isFinite(item.value));
-        const first = result.period.periods[0];
-        const mean = periods.reduce((sum, item) => sum + item.value, 0) / Math.max(1, periods.length);
-        const name = result.target.baseName;
-        const diff = mean !== 0 ? ((first.value - mean) / Math.abs(mean)) * 100 : null;
-        const compare = diff === null || Math.abs(diff) < 1
-          ? "전체 평균과 비슷해요"
-          : `전체 평균(${formatValue(mean, result.target.unit, 0)})보다 ${formatValue(Math.abs(diff), "%", 0)} ${diff > 0 ? "높아요" : "낮아요"}`;
         return {
-          sentences: [{ level: "info", text: `${first.label}의 ${name}${josa(name, "은/는")} ${formatValue(first.value, result.target.unit, 0)}${josa(formatValue(first.value, result.target.unit, 0), "으로/로")}, ${compare}. 첫 기간이라 직전과는 비교할 수 없어요.` }],
+          sentences: [{ level: "info", text: "첫 기간이라 비교할 직전 값이 없어요." }],
           caveat: "",
         };
       }
@@ -248,26 +238,7 @@ export function explainHighlight(record, visual, highlight) {
   const factorMatch = /driver-factor-(\d+)$/.exec(String(visual?.id || ""));
   const isDriverVisual = /driver-/.test(String(visual?.id || ""));
   let sentences;
-  if (result.mode === "periods" && result.period) {
-    sentences = explainPeriod(result, exclude);
-    const extreme = /^(최고|최저)/.exec(String(highlight.label || ""))?.[1];
-    if (extreme) {
-      // '최고·최저'는 먼저 그 값이 평균과 얼마나 다른지 사실로 알려 주고, 설명이 안 되는 참고 문장은 뺀다.
-      const values = result.period.periods.filter((item) => Number.isFinite(item.value));
-      const point = result.period.periods[result.period.focusIndex];
-      const mean = values.reduce((sum, item) => sum + item.value, 0) / Math.max(1, values.length);
-      const name = result.target.baseName;
-      const diff = mean !== 0 ? Math.round((Math.abs(point.value - mean) / Math.abs(mean)) * 100) : null;
-      const valueText = formatValue(point.value, result.target.unit, 0);
-      sentences = [
-        {
-          level: "important",
-          text: `${point.label}의 ${name}${josa(name, "은/는")} ${valueText}${josa(valueText, "으로/로")} 전체 기간 중 가장 ${extreme === "최고" ? "높아요" : "낮아요"}${diff ? ` (평균보다 ${diff}% ${extreme === "최고" ? "높음" : "낮음"})` : ""}.`,
-        },
-        ...sentences.filter((sentence) => !/설명되지 않아요|찾기 어려워요|비교할 수 없어요/.test(sentence.text)),
-      ];
-    }
-  }
+  if (result.mode === "periods" && result.period) sentences = explainPeriod(result, exclude);
   else if (factorMatch) sentences = explainFactorGroup(result, Number(factorMatch[1]), highlight);
   else sentences = explainRecords(result, isDriverVisual ? null : findRowCells(sheet, location.rowNumber), seriesProfile);
   if (sentences.length === 0) return null;
