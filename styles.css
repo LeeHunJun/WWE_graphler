@@ -4828,3 +4828,124 @@ svg {
     bottom: 12px;
   }
 }
+
+/* '부가 정보 보기'(계산) / 'AI 핵심 요약'(AI) 두 버튼과 출처 표시 */
+.extras-button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid #cfdccb;
+  border-radius: 6px;
+  background: var(--green-tint);
+  color: var(--forest);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.extras-button:hover:not(:disabled) {
+  border-color: var(--forest-soft);
+}
+
+.extras-button[aria-pressed="true"] {
+  background: #fff;
+}
+
+.extras-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.extras-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.source-computed {
+  background: var(--green-pale);
+  color: #2f5a40;
+}
+
+.source-ai {
+  background: var(--violet-pale);
+  color: #5f4b91;
+}
+
+.ai-status-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 11px;
+  border: 1px solid #e6dff3;
+  border-radius: 6px;
+  background: #faf8fd;
+  color: #5f4b91;
+  font-size: 12px;
+}
+
+.ai-status-note[hidden] {
+  display: none;
+}
+
+.ai-status-recheck {
+  padding: 3px 9px;
+  border: 1px solid #d9cff0;
+  border-radius: 999px;
+  background: #fff;
+  color: #5f4b91;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ai-insights {
+  display: grid;
+  gap: 11px;
+  margin-top: 6px;
+  padding: 14px;
+  border: 1px solid #e6dff3;
+  border-radius: 8px;
+  background: #fcfbfe;
+}
+
+.ai-insights[hidden],
+.ai-visuals-block[hidden] {
+  display: none;
+}
+
+.ai-visuals-block {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-visuals-heading {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}

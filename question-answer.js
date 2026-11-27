@@ -12,7 +12,7 @@ const INTENT_PATTERNS = {
 };
 const VALUE_KINDS = new Set(["numeric", "numeric_discrete", "binary"]);
 
-// 'AI 요약' 부가 정보에 있는 원인 분석 그래프를 질문으로도 바로 볼 수 있게, 주제 단어로 해당 그래프를 고른다.
+// '부가 정보 보기'에 있는 원인 분석 그래프를 질문으로도 바로 볼 수 있게, 주제 단어로 해당 그래프를 고른다.
 const TOPIC_PATTERNS = [
   { key: "decomposition", pattern: /분해|구성|기여|비중|쪼개|나눠\s*보/, ids: (id) => id.startsWith("driver-decomposition") },
   { key: "comovers", pattern: /함께\s*(바뀐|변한|움직)|같이\s*(바뀐|변한|움직)|동시에|관련\s*지표|따라\s*움직/, ids: (id) => id === "driver-comovers" },
@@ -195,7 +195,7 @@ export function answerQuestion(record, question) {
     return {
       ...base,
       status: "unsupported",
-      sentences: [{ level: "info", text: "PDF처럼 표가 없는 문서는 질문에 바로 계산해 답할 수 없어요. ‘AI 요약’을 누르면 문서 전체 요약을 볼 수 있어요." }],
+      sentences: [{ level: "info", text: "PDF처럼 표가 없는 문서는 질문에 바로 계산해 답할 수 없어요. ‘AI 핵심 요약’을 누르면 AI가 쓴 문서 요약을 볼 수 있어요." }],
     };
   }
 

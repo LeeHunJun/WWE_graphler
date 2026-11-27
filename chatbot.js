@@ -1,13 +1,13 @@
 // 오른쪽 아래 데이터 도우미 챗봇.
 // 1) 질문을 받으면 그 답에 맞는 그래프를 찾는다. 처음 질문한 답에 있으면 그곳으로, 아니면
-//    'AI 요약' 부가 정보에 있는지 확인해 펼친 뒤 그 그래프로 이동하고, 짧은 요약만 알려 준다.
+//    '부가 정보 보기' 영역에 있는지 확인해 펼친 뒤 그 그래프로 이동하고, 짧은 요약만 알려 준다.
 // 2) 화면의 그래프를 누르면 그 그래프의 짧은 요약만 알려 준다.
 // 모든 내용은 원본 행에서 코드로 계산한 결과이며 AI를 호출하지 않는다.
 
 import { answerQuestion, bestTitleMatch } from "./question-answer.js";
 import { summarizeVisual } from "./visualization.js";
 
-const OUTPUT_SELECTORS = ["#visualization-output", "#extra-visualization-output", "#driver-visual-output"];
+const OUTPUT_SELECTORS = ["#visualization-output", "#ai-visualization-output", "#extra-visualization-output", "#driver-visual-output"];
 
 export function normalizeVisualKey(id) {
   return String(id || "").replace(/^question-/, "").replace(/^auto-/, "").replace(/^sheet-\d+-/, "");

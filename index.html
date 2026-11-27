@@ -341,13 +341,21 @@
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5A1.5 1.5 0 0 1 6.5 2h7A1.5 1.5 0 0 1 15 3.5V18l-5-3-5 3V3.5Z" /></svg>
                     <span>인사이트 저장</span>
                   </button>
-                  <button class="ai-summary-button" id="ai-summarize-button" type="button" disabled>
+                  <button class="extras-button" id="show-extras-button" type="button" disabled title="데이터에서 바로 계산한 부가 그래프·원인 분석·인수인계를 펼쳐요 (AI 사용 안 함)">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 16.5h14M5.5 13V9M10 13V5M14.5 13v-6" /></svg>
+                    <span id="show-extras-label">부가 정보 보기</span>
+                  </button>
+                  <button class="ai-summary-button" id="ai-summarize-button" type="button" disabled title="AI가 문서를 읽고 핵심 요약을 써요 (시간이 걸려요)">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v3M10 14.5v3M2.5 10h3M14.5 10h3M4.7 4.7l2.1 2.1m6.4 6.4 2.1 2.1m0-10.6-2.1 2.1m-6.4 6.4-2.1 2.1"/><circle cx="10" cy="10" r="3.25"/></svg>
-                    <span id="ai-summarize-label">AI 요약</span>
+                    <span id="ai-summarize-label">AI 핵심 요약</span>
                   </button>
                   <button class="dev-sample-button" id="load-sample-spec" type="button" hidden>6종 샘플 보기</button>
                 </div>
               </div>
+              <p class="ai-status-note" id="ai-status-note" hidden>
+                <span id="ai-status-text"></span>
+                <button class="ai-status-recheck" id="ai-status-recheck" type="button">다시 확인</button>
+              </p>
               <details class="developer-tools" id="developer-tools" hidden>
                 <summary>테스트 자료</summary>
                 <div class="developer-links">
@@ -363,16 +371,16 @@
                 </div>
               </details>
               <div class="question-answer" id="question-answer" hidden>
-                <p class="mini-eyebrow">ANSWER</p>
+                <p class="mini-eyebrow">ANSWER <span class="source-badge source-computed">🧮 데이터에서 계산</span></p>
                 <h3 class="question-answer-title" id="question-answer-title"></h3>
                 <ul class="question-answer-sentences" id="question-answer-sentences"></ul>
               </div>
               <div class="visualization-output" id="visualization-output" aria-live="polite"></div>
-              <section class="extra-insights" id="extra-insights" aria-labelledby="extra-insights-title" hidden>
+              <section class="ai-insights" id="ai-insights" aria-labelledby="ai-insights-title" hidden>
                 <div class="extra-insights-heading">
-                  <p class="mini-eyebrow">AI SUMMARY · MORE INSIGHTS</p>
-                  <h3 id="extra-insights-title">질문 밖에서 찾은 부가 정보</h3>
-                  <p class="extra-insights-help">질문과 별개로 이 파일에서 얻을 수 있는 요약과 그래프예요.</p>
+                  <p class="mini-eyebrow">AI SUMMARY <span class="source-badge source-ai">✨ AI가 작성</span></p>
+                  <h3 id="ai-insights-title">AI 핵심 요약</h3>
+                  <p class="extra-insights-help">AI가 문서를 읽고 쓴 요약이에요. 문장마다 원문 근거를 확인할 수 있어요.</p>
                 </div>
                 <section class="ai-summary-card" id="ai-summary-card" aria-label="AI 문서 요약" hidden>
                   <div class="ai-summary-card-heading">
@@ -388,11 +396,22 @@
                 </section>
                 <div class="ai-summary-loading" id="ai-summary-loading" role="status" aria-live="polite" hidden>
                   <span class="ai-spinner" aria-hidden="true"></span>
-                  <span>문서 원문을 확인하고 요약과 근거를 정리하고 있어요.</span>
+                  <span>AI가 문서 원문을 읽고 요약을 쓰고 있어요. 큰 파일은 몇 분 걸릴 수 있어요.</span>
                 </div>
                 <div class="ai-summary-error" id="ai-summary-error" role="alert" hidden>
                   <p id="ai-summary-error-text"></p>
                   <button id="ai-summary-retry" type="button">다시 시도</button>
+                </div>
+                <div class="ai-visuals-block" id="ai-visuals-block" hidden>
+                  <p class="ai-visuals-heading">AI가 만든 그래프 <span class="source-badge source-ai">✨ AI가 작성</span></p>
+                  <div class="visualization-output" id="ai-visualization-output" aria-live="polite"></div>
+                </div>
+              </section>
+              <section class="extra-insights" id="extra-insights" aria-labelledby="extra-insights-title" hidden>
+                <div class="extra-insights-heading">
+                  <p class="mini-eyebrow">MORE INSIGHTS <span class="source-badge source-computed">🧮 데이터에서 계산</span></p>
+                  <h3 id="extra-insights-title">질문 밖에서 찾은 부가 정보</h3>
+                  <p class="extra-insights-help">AI 없이 표의 원본 행에서 바로 계산한 그래프예요. 원인 분석과 인수인계 요약은 아래에 이어져요.</p>
                 </div>
                 <div class="visualization-output" id="extra-visualization-output" aria-live="polite"></div>
               </section>
@@ -403,7 +422,7 @@
                   <p class="mini-eyebrow">HANDOVER</p>
                   <h2 id="handover-title">인수인계 요약 · 이 업무를 넘겨받는다면</h2>
                 </div>
-                <span class="driver-badge" title="원본 행에서 코드로 계산했으며, 요인 분석은 인과관계를 확정하지 않아요.">원본 행 기반</span>
+                <span class="source-badge source-computed">🧮 데이터에서 계산</span>
               </div>
               <p class="driver-intro">파일의 모든 시트를 함께 읽어 지금 상태, 바쁜 시기, 조심할 대상, 반복되는 문제, 놓치면 안 되는 정기 업무를 한 번에 정리해요. 문장마다 계산 근거와 원본 행을 확인할 수 있어요.</p>
               <p class="driver-summary-line" id="handover-summary"></p>
@@ -415,7 +434,7 @@
                   <p class="mini-eyebrow">WHY ANALYSIS</p>
                   <h2 id="driver-title">원인 분석 · 왜 이런 결과가 나왔을까?</h2>
                 </div>
-                <span class="driver-badge" title="데이터의 차이·상관을 근거로 한 추정이며, 인과관계를 확정하지 않아요.">근거 기반 추정</span>
+                <span class="source-badge source-computed">🧮 데이터에서 계산</span>
               </div>
               <p class="driver-intro">결과로 볼 지표를 고르면 어떤 조건에서 그 값이 달라졌는지, 값이 떨어진 기간에 무엇이 함께 바뀌었는지 원본 행에서 직접 계산해 보여드려요.</p>
               <div class="driver-controls">

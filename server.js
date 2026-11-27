@@ -5,7 +5,7 @@ import { appendFile, mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AiJobQueueError, createAiJobStore } from "./ai-job-store.js";
-import { AiServiceError, requestAiSummary } from "./ai-service.js";
+import { AiServiceError, checkAiConnection, requestAiSummary } from "./ai-service.js";
 import { handleAuthApi, isAuthApiPath } from "./auth-api.js";
 import { createAuthStore } from "./auth-store.js";
 import { openDatabase } from "./database.js";
@@ -168,6 +168,21 @@ async function executeAiJob(payload, requestId, startedAt) {
   }
 }
 
+// AI 연결 상태는 10분 동안 기억해 화면을 열 때마다 AI를 부르지 않는다.
+let aiStatusCache = null;
+const AI_STATUS_TTL_MS = 10 * 60 * 1000;
+
+async function handleAiStatus(request, response) {
+  const url = new URL(request.url, "http://localhost");
+  const config = getServiceConfig();
+  const key = `${config.baseUrl || ""}|${config.apiKey ? config.apiKey.length : 0}`;
+  const fresh = aiStatusCache && aiStatusCache.key === key && Date.now() - aiStatusCache.at < AI_STATUS_TTL_MS;
+  if (!fresh || url.searchParams.get("refresh") === "1") {
+    aiStatusCache = { key, at: Date.now(), result: await checkAiConnection(config) };
+  }
+  sendJson(response, 200, { ...aiStatusCache.result, checkedAt: aiStatusCache.at });
+}
+
 async function handleAiRequest(request, response) {
   const url = new URL(request.url, "http://localhost");
   const requestId = randomUUID();
@@ -274,6 +289,10 @@ async function main() {
 
   const server = createHttpServer(async (request, response) => {
     const requestPath = new URL(request.url, "http://localhost").pathname;
+    if (requestPath === "/api/ai-status" && request.method === "GET") {
+      await handleAiStatus(request, response);
+      return;
+    }
     if (requestPath === "/api/ai-summarize" || requestPath.startsWith("/api/ai-summarize/")) {
       await handleAiRequest(request, response);
       return;

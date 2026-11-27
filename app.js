@@ -58,6 +58,16 @@ const questionAnswer = document.querySelector("#question-answer");
 const questionAnswerTitle = document.querySelector("#question-answer-title");
 const questionAnswerSentences = document.querySelector("#question-answer-sentences");
 const extraInsights = document.querySelector("#extra-insights");
+const aiInsights = document.querySelector("#ai-insights");
+const aiVisualsBlock = document.querySelector("#ai-visuals-block");
+const aiVisualizationOutput = document.querySelector("#ai-visualization-output");
+const showExtrasButton = document.querySelector("#show-extras-button");
+const showExtrasLabel = document.querySelector("#show-extras-label");
+const aiStatusNote = document.querySelector("#ai-status-note");
+const aiStatusText = document.querySelector("#ai-status-text");
+const aiStatusRecheck = document.querySelector("#ai-status-recheck");
+// 서버가 확인한 AI 연결 상태. 연결 전·확인 전에는 null.
+let aiConnection = null;
 const extraVisualizationOutput = document.querySelector("#extra-visualization-output");
 const aiSummarizeButton = document.querySelector("#ai-summarize-button");
 const aiSummarizeLabel = document.querySelector("#ai-summarize-label");
@@ -1094,15 +1104,21 @@ function renderAiSummary(record) {
   const error = record ? aiErrors.get(record.id) : null;
   const summary = record?.aiSummary;
 
-  aiSummarizeButton.disabled = !record || isLoading;
+  const aiReady = aiConnection?.status === "connected";
+  aiSummarizeButton.disabled = !record || isLoading || !aiReady;
   aiSummarizeButton.classList.toggle("is-loading", isLoading);
+  aiSummarizeButton.title = aiReady
+    ? "AI가 문서를 읽고 핵심 요약을 써요 (시간이 걸려요)"
+    : aiConnection?.message || "AI 연결 상태를 확인하고 있어요";
   aiSummarizeLabel.textContent = isLoading
     ? "요약 중"
     : error
       ? "다시 시도"
-      : summary && record?.extrasRevealed
-        ? "다시 요약"
-        : "AI 요약";
+      : summary
+        ? "AI 다시 요약"
+        : "AI 핵심 요약";
+  aiInsights.hidden = !record || (!summary && !isLoading && !error);
+  renderAiVisuals(record);
   aiSummaryLoading.hidden = !isLoading;
   aiSummaryError.hidden = !error;
   aiSummaryErrorText.textContent = error || "";
@@ -1257,10 +1273,7 @@ async function runAiSummary(record) {
       throw new Error("요약은 만들었지만 브라우저에 저장하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도해 주세요.");
     }
     aiErrors.delete(record.id);
-    if (selectedDocumentId === record.id) {
-      renderAiSummary(record);
-      renderExtraInsights(record);
-    }
+    if (selectedDocumentId === record.id) renderAiSummary(record);
   } catch (error) {
     const message = error.name === "AbortError" || error.name === "TimeoutError"
       ? "AI 요청 시간이 초과되었습니다. 다시 시도해 주세요."
@@ -1277,7 +1290,7 @@ async function runAiSummary(record) {
   }
 }
 
-// 질문 밖 정보(자동 그래프·AI 요약)는 'AI 요약'을 눌렀을 때만 보여 준다.
+// 질문 밖 정보(자동 그래프·AI 요약)는 '부가 정보 보기'를 눌렀을 때만 보여 준다(AI 요약은 'AI 핵심 요약' 버튼).
 function normalizeVisualKey(id) {
   return String(id || "").replace(/^question-/, "").replace(/^auto-/, "").replace(/^sheet-\d+-/, "");
 }
@@ -1287,14 +1300,48 @@ function getQuestionResult(record) {
   return answerQuestion(record, record.question);
 }
 
+// '부가 정보 보기': AI 없이 코드로 계산한 그래프만(질문 답에 이미 나온 그래프는 뺌).
 function getExtraSpec(record, questionResult) {
-  const combined = record.aiSummary ? getCombinedVisualSpec(record) : record.visualSpec || { status: "ok", message: "", visuals: [] };
+  const computed = record.type === "pdf" ? { status: "ok", message: "", visuals: [] } : record.visualSpec || { status: "ok", message: "", visuals: [] };
   const shown = new Set((questionResult?.visualIds || []).map(normalizeVisualKey).filter((key) => key !== "line"));
   return {
-    ...combined,
-    message: record.type === "pdf" && !record.aiSummary ? "" : combined.message,
-    visuals: (combined.visuals || []).filter((visual) => !shown.has(normalizeVisualKey(visual.id))),
+    status: "ok",
+    message: record.type === "pdf" ? "PDF는 표가 없어 계산한 그래프가 없어요. ‘AI 핵심 요약’을 이용해 주세요." : "",
+    visuals: (computed.visuals || []).filter((visual) => !shown.has(normalizeVisualKey(visual.id))),
   };
+}
+
+// 'AI 핵심 요약'으로 AI가 만든 그래프(검증을 통과한 것만).
+function getAiVisuals(record) {
+  const spec = record?.aiSummary?.spec;
+  return spec?.status === "ok" && Array.isArray(spec.visuals) ? spec.visuals : [];
+}
+
+function renderAiVisuals(record) {
+  const visuals = record ? getAiVisuals(record) : [];
+  aiVisualsBlock.hidden = visuals.length === 0;
+  renderVisuals({ status: "ok", message: "", visuals }, {
+    container: aiVisualizationOutput,
+    sourceDocument: record,
+    onNavigate: record ? (sourceId) => selectDocument(record.id, sourceId) : undefined,
+  });
+}
+
+function renderAiStatus() {
+  const connected = aiConnection?.status === "connected";
+  aiStatusNote.hidden = !aiConnection || connected;
+  aiStatusText.textContent = aiConnection && !connected ? `✨ ${aiConnection.message} ‘AI 핵심 요약’은 쓸 수 없고, 나머지 기능은 그대로 쓸 수 있어요.` : "";
+}
+
+async function refreshAiStatus({ force = false } = {}) {
+  try {
+    const response = await fetch(`/api/ai-status${force ? "?refresh=1" : ""}`, { signal: AbortSignal.timeout(30000) });
+    aiConnection = response.ok ? await response.json() : { status: "unreachable", message: "AI 연결 상태를 확인하지 못했어요." };
+  } catch {
+    aiConnection = { status: "unreachable", message: "AI 연결 상태를 확인하지 못했어요." };
+  }
+  renderAiStatus();
+  renderAiSummary(documents.find((item) => item.id === selectedDocumentId) || null);
 }
 
 // 화면에 보이는 그래프(질문 답 + 펼친 부가 정보). 인사이트 저장 후보로 쓴다.
@@ -1302,6 +1349,7 @@ function getDisplayedSpec(record) {
   const questionResult = getQuestionResult(record);
   const visuals = [...(questionResult?.spec.visuals || [])];
   if (record.extrasRevealed) visuals.push(...getExtraSpec(record, questionResult).visuals);
+  visuals.push(...getAiVisuals(record));
   return { status: "ok", message: "", visuals };
 }
 
@@ -1362,6 +1410,8 @@ function renderSelectedVisuals(record) {
     renderVisuals(fallbackSpec, { container: visualizationOutput });
     renderVisuals({ status: "ok", message: "", visuals: [] }, { container: extraVisualizationOutput });
     extraInsights.hidden = true;
+    showExtrasButton.disabled = true;
+    showExtrasLabel.textContent = "부가 정보 보기";
     renderQuestionBar(null);
     renderQuestionAnswer(null, null);
     if (saveInsightButton) saveInsightButton.disabled = true;
@@ -1384,7 +1434,7 @@ function renderSelectedVisuals(record) {
       status: "ok",
       message: record.extrasRevealed
         ? "궁금한 점을 질문창에 적으면, 그 답에 맞는 그래프를 여기에 먼저 보여 드려요."
-        : "미리보기의 질문창에 궁금한 점을 적으면 그 답에 맞는 그래프만 보여 드려요. 파일 전체에서 얻을 수 있는 부가 정보는 ‘AI 요약’을 누르면 볼 수 있어요.",
+        : "미리보기의 질문창에 궁금한 점을 적으면 그 답에 맞는 그래프만 보여 드려요. 파일 전체에서 얻을 수 있는 부가 정보는 ‘부가 정보 보기’, AI가 쓰는 요약은 ‘AI 핵심 요약’을 누르면 볼 수 있어요.",
       visuals: [],
     };
   renderVisuals(mainSpec, { container: visualizationOutput, sourceDocument: record, onNavigate });
@@ -1393,10 +1443,13 @@ function renderSelectedVisuals(record) {
   renderExtraInsights(record, questionResult);
 }
 
-// 'AI 요약'으로 펼친 부가 정보만 다시 그린다. 위의 질문 답은 건드리지 않아 자리가 바뀌지 않는다.
+// '부가 정보 보기'로 펼친 부가 정보만 다시 그린다. 위의 질문 답은 건드리지 않아 자리가 바뀌지 않는다.
 function renderExtraInsights(record, questionResult = getQuestionResult(record)) {
   const onNavigate = (sourceId) => selectDocument(record.id, sourceId);
   extraInsights.hidden = !record.extrasRevealed;
+  showExtrasButton.disabled = false;
+  showExtrasLabel.textContent = record.extrasRevealed ? "부가 정보 접기" : "부가 정보 보기";
+  showExtrasButton.setAttribute("aria-pressed", String(Boolean(record.extrasRevealed)));
   if (record.extrasRevealed) {
     renderVisuals(getExtraSpec(record, questionResult), { container: extraVisualizationOutput, sourceDocument: record, onNavigate });
     renderHandoverPanel(record, { onNavigate });
@@ -1711,25 +1764,25 @@ confirmDeleteDocumentButton.addEventListener("click", async () => {
 });
 
 loadSampleSpecButton.addEventListener("click", loadSampleVisualization);
-aiSummarizeButton.addEventListener("click", async () => {
+// '부가 정보 보기': AI 없이 계산한 그래프·원인 분석·인수인계를 펼치거나 접는다(질문 답은 그대로).
+showExtrasButton.addEventListener("click", async () => {
   const record = documents.find((item) => item.id === selectedDocumentId);
   if (!record) return;
-  // 처음 누르면 질문 밖 부가 정보를 펼치고, 아직 AI 요약이 없으면 요약도 요청한다. 펼친 뒤 다시 누르면 다시 요약한다.
-  if (!record.extrasRevealed) {
-    record.extrasRevealed = true;
-    try {
-      await saveDocument(record);
-    } catch {
-      // 펼친 상태 저장에 실패해도 이번 화면에는 보여 준다.
-    }
-    renderAiSummary(record);
-    renderExtraInsights(record);
-    // 질문한 답은 위에 그대로 두고 화면도 옮기지 않는다. 부가 정보는 그 아래에 펼친다.
-    showToast(record.question ? "질문 답은 위에 그대로 두고, 아래에 부가 정보를 펼쳤어요." : "아래에 부가 정보를 펼쳤어요.");
-    if (record.aiSummary) return;
+  record.extrasRevealed = !record.extrasRevealed;
+  try {
+    await saveDocument(record);
+  } catch {
+    // 펼친 상태 저장에 실패해도 이번 화면에는 반영한다.
   }
+  renderExtraInsights(record);
+});
+// 'AI 핵심 요약': AI를 불러 핵심 요약과 AI 그래프를 만든다(질문 답·부가 정보는 그대로).
+aiSummarizeButton.addEventListener("click", () => {
+  const record = documents.find((item) => item.id === selectedDocumentId);
+  if (!record || aiConnection?.status !== "connected") return;
   runAiSummary(record);
 });
+aiStatusRecheck.addEventListener("click", () => refreshAiStatus({ force: true }));
 questionForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const record = documents.find((item) => item.id === selectedDocumentId);
@@ -1922,6 +1975,7 @@ async function startApp() {
   await claimLegacyDocuments(user);
   startWorkspace(user);
   startChatbot();
+  refreshAiStatus();
   await init();
 }
 
@@ -1931,7 +1985,7 @@ function startChatbot() {
     getRecord: () => documents.find((item) => item.id === selectedDocumentId) || null,
     getMainVisuals: (record) => getQuestionResult(record)?.spec.visuals || [],
     getExtraVisuals: (record) => {
-      const visuals = [...getExtraSpec(record, getQuestionResult(record)).visuals];
+      const visuals = [...getExtraSpec(record, getQuestionResult(record)).visuals, ...getAiVisuals(record)];
       if (record.type !== "pdf") {
         try {
           visuals.push(...buildDriverVisualSpec(analyzeDrivers(record), record).visuals);

@@ -69,6 +69,43 @@ export function validateAiEnvelope(value, availableSources = null) {
   return null;
 }
 
+// AI 연결 상태: 주소·키가 있는지, 실제로 AI API가 응답하는지 아주 짧은 요청으로 확인한다.
+// 결과: { status: "connected" | "not_configured" | "wrong_address" | "key_rejected" | "unreachable", message }
+export async function checkAiConnection({ apiKey, baseUrl, fetchImpl = fetch, timeoutMs = 15000 } = {}) {
+  if (!apiKey || !baseUrl) {
+    return { status: "not_configured", message: "AI가 연결되지 않았어요. LLM_API_KEY와 LLM_BASE_URL을 설정해 주세요." };
+  }
+  let endpoint;
+  try {
+    endpoint = resolveChatCompletionsUrl(baseUrl);
+  } catch (error) {
+    return { status: "not_configured", message: `AI가 연결되지 않았어요. ${error.message}` };
+  }
+  let response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: MODEL_NAME, messages: [{ role: "user", content: "ping" }], max_completion_tokens: 1 }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    return { status: "unreachable", message: "AI 서비스에 연결하지 못했어요. 네트워크나 LLM_BASE_URL을 확인해 주세요." };
+  }
+  if (response.status === 404 || response.status === 405) {
+    return { status: "wrong_address", message: `AI가 연결되지 않았어요. LLM_BASE_URL 주소에 AI API가 없어요 (HTTP ${response.status}).` };
+  }
+  if (response.status === 401 || response.status === 403) {
+    return { status: "key_rejected", message: `AI가 연결되지 않았어요. API 키가 거부됐어요 (HTTP ${response.status}).` };
+  }
+  const contentType = response.headers.get("content-type") || "";
+  if (response.ok && !/json/i.test(contentType)) {
+    return { status: "wrong_address", message: "AI가 연결되지 않았어요. LLM_BASE_URL이 AI API가 아니라 웹 페이지 주소예요." };
+  }
+  // 400(토큰 1개 제한 거부 등)·429·5xx도 AI 서비스 자체는 응답한 것이므로 연결된 것으로 본다.
+  return { status: "connected", message: "AI가 연결되어 있어요." };
+}
+
 export function resolveChatCompletionsUrl(baseUrl) {
   let url;
   try {

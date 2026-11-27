@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AiServiceError, requestAiSummary, resolveChatCompletionsUrl, validateAiEnvelope } from "../ai-service.js";
+import { AiServiceError, checkAiConnection, requestAiSummary, resolveChatCompletionsUrl, validateAiEnvelope } from "../ai-service.js";
 import { validateAiQuality } from "../ai-quality.js";
 import { isSupportedByEvidence } from "../source-evidence.js";
 import { buildDocumentChunks } from "../ai-chunks.js";
@@ -1020,4 +1020,14 @@ test("여러 구간의 요약을 합칠 때 우선순위 계산이 실패하지 
   assert.equal(result.spec.status, "ok");
   assert.ok(result.summary.length >= 2, "여러 구간 요약이 합쳐진다");
   assert.ok(!diagnostics.some((entry) => /error/.test(entry.stage || "")), "내부 오류 진단이 없다");
+});
+
+test("AI 연결 상태를 주소 없음·잘못된 주소·키 거부·연결됨으로 구분한다", async () => {
+  assert.equal((await checkAiConnection({})).status, "not_configured");
+  const html = async () => new Response("<!doctype html><title>앱</title>", { status: 200, headers: { "Content-Type": "text/html" } });
+  assert.equal((await checkAiConnection({ ...options, fetchImpl: html })).status, "wrong_address");
+  assert.equal((await checkAiConnection({ ...options, fetchImpl: async () => new Response("", { status: 404 }) })).status, "wrong_address");
+  assert.equal((await checkAiConnection({ ...options, fetchImpl: async () => new Response("{}", { status: 401, headers: { "Content-Type": "application/json" } }) })).status, "key_rejected");
+  assert.equal((await checkAiConnection({ ...options, fetchImpl: async () => modelResponse("p") })).status, "connected");
+  assert.equal((await checkAiConnection({ ...options, fetchImpl: async () => { throw new TypeError("fetch failed"); } })).status, "unreachable");
 });
